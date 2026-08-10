@@ -30,7 +30,7 @@ See [NOTICE](NOTICE) and [docs/upstream.md](docs/upstream.md).
 
 ## Requirements
 
-- Go 1.25 or later.
+- Go 1.25.12 or later.
 - A supported bundled browser platform, or a local Chromium-compatible browser.
 - GitHub Copilot CLI for the intended MCP integration.
 - A dedicated Xiaohongshu or RedNote account is strongly recommended.

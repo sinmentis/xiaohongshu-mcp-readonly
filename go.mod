@@ -1,6 +1,6 @@
 module github.com/sinmentis/xiaohongshu-mcp-readonly
 
-go 1.25.0
+go 1.25.12
 
 require (
 	github.com/avast/retry-go/v4 v4.7.0
