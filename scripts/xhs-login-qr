@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+for command in curl jq base64 zbarimg qrencode sha256sum; do
+	if ! command -v "$command" >/dev/null 2>&1; then
+		printf 'Missing required command: %s\n' "$command" >&2
+		exit 1
+	fi
+done
+
+mcp_url="${XHS_MCP_URL:-http://127.0.0.1:18060/mcp}"
+login_url="${XHS_LOGIN_URL:-http://127.0.0.1:18060/login}"
+state_dir="${XHS_STATE_DIR:-$HOME/.local/share/xiaohongshu-mcp-readonly}"
+qr_file="$state_dir/login-qr.png"
+response_file="$(mktemp)"
+poll_interval="${XHS_LOGIN_POLL_INTERVAL:-2}"
+timeout_seconds="${XHS_LOGIN_TIMEOUT_SECONDS:-660}"
+
+cleanup() {
+	rm -f "$response_file"
+}
+trap cleanup EXIT
+
+mkdir -p "$state_dir"
+chmod 0700 "$state_dir"
+printf 'Web login fallback: %s\n' "$login_url"
+
+call_mcp() {
+	curl -fsS --max-time 180 \
+		-X POST "$mcp_url" \
+		-H 'Content-Type: application/json' \
+		-H 'Accept: application/json, text/event-stream' \
+		-d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_login_qrcode","arguments":{}}}' \
+		>"$response_file"
+}
+
+started_at="$(date +%s)"
+last_image_hash=""
+last_status=""
+
+while true; do
+	call_mcp
+
+	error_message="$(jq -r '.error.message // empty' "$response_file")"
+	if [[ -n "$error_message" ]]; then
+		printf 'MCP error: %s\n' "$error_message" >&2
+		exit 1
+	fi
+
+	status_message="$(jq -r '.result.content[]? | select(.type == "text") | .text' "$response_file")"
+	image_data="$(jq -r '.result.content[]? | select(.type == "image") | .data' "$response_file")"
+
+	if [[ "$status_message" == *"Already logged in."* ]]; then
+		printf '\nLogin completed and cookies were saved.\n'
+		exit 0
+	fi
+	if [[ "$status_message" == *"saved site cookies"* && "$status_message" == *"Start a new login session"* ]]; then
+		printf '\n%s\n' "$status_message" >&2
+		exit 1
+	fi
+
+	if [[ -n "$image_data" && "$image_data" != "null" ]]; then
+		image_hash="$(printf '%s' "$image_data" | sha256sum | cut -d' ' -f1)"
+		if [[ "$image_hash" != "$last_image_hash" ]]; then
+			printf '%s' "$image_data" | base64 --decode >"$qr_file"
+			chmod 0600 "$qr_file"
+
+			payload="$(zbarimg --quiet --raw "$qr_file")"
+			if [[ -z "$payload" ]]; then
+				printf 'Could not decode the generated QR image. Open it directly: %s\n' "$qr_file" >&2
+				exit 1
+			fi
+
+			printf '\n%s\n\n' "$status_message"
+			printf '%s' "$payload" | qrencode -t ANSIUTF8
+			printf '\nThe QR code is also saved at: %s\n' "$qr_file"
+			printf 'Keep this command running. A second device-verification code will appear if required.\n'
+			last_image_hash="$image_hash"
+			last_status="$status_message"
+		fi
+	elif [[ -n "$status_message" && "$status_message" != "$last_status" ]]; then
+		printf '\n%s\n' "$status_message"
+		last_status="$status_message"
+	fi
+
+	if (( $(date +%s) - started_at >= timeout_seconds )); then
+		printf '\nLogin did not complete within %s seconds. Run xhs-login-qr again.\n' "$timeout_seconds" >&2
+		exit 1
+	fi
+
+	sleep "$poll_interval"
+done

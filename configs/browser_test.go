@@ -38,3 +38,10 @@ func TestProxyFromEnv(t *testing.T) {
 		assert.Equal(t, "socks5://127.0.0.1:1080", ProxyFromEnv())
 	})
 }
+
+func TestBrowserConfig(t *testing.T) {
+	SetBrowser("/usr/bin/chromium", false)
+
+	assert.Equal(t, "/usr/bin/chromium", BrowserBin())
+	assert.False(t, BrowserSourceFingerprint())
+}

@@ -10,7 +10,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
-	"github.com/xpzouying/xiaohongshu-mcp/browser"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/browser"
 )
 
 const typeProbeBody = `<input id="a"><div id="b" contenteditable="true"></div>`

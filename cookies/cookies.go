@@ -2,6 +2,7 @@ package cookies
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -107,12 +108,15 @@ func (c *localCookie) write(cks []byte, seed int) error {
 	}
 
 	if dir := filepath.Dir(c.path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			return errors.Wrap(err, "create cookies dir failed")
 		}
 	}
 
-	return os.WriteFile(c.path, data, 0644)
+	if err := os.WriteFile(c.path, data, 0600); err != nil {
+		return err
+	}
+	return os.Chmod(c.path, 0600)
 }
 
 // DeleteCookies 删除 cookies 文件。
@@ -124,25 +128,19 @@ func (c *localCookie) DeleteCookies() error {
 	return os.Remove(c.path)
 }
 
-// GetCookiesFilePath 获取 cookies 文件路径。
-// 为了向后兼容，如果旧路径 /tmp/cookies.json 存在，则继续使用；
-// 否则使用当前目录下的 cookies.json
+// GetCookiesFilePath returns the configured cookie file or the local default.
 func GetCookiesFilePath() string {
-	// 显式指定优先，无条件——环境里的残留文件不能盖掉用户明说的配置
 	if path := os.Getenv("COOKIES_PATH"); path != "" {
 		return path
 	}
-
-	// 本地目录
-	if _, err := os.Stat(localCookiesPath); err == nil {
-		return localCookiesPath
-	}
-
-	// 旧路径 /tmp/cookies.json，仅为老用户兜底
-	oldPath := filepath.Join(os.TempDir(), "cookies.json")
-	if _, err := os.Stat(oldPath); err == nil {
-		return oldPath
-	}
-
 	return localCookiesPath
+}
+
+// GetCookiesFilePathForSite 隔离国内站与海外站的会话文件。
+func GetCookiesFilePathForSite(site string) string {
+	base := GetCookiesFilePath()
+	if site == "" || site == "xiaohongshu" {
+		return base
+	}
+	return filepath.Join(filepath.Dir(base), fmt.Sprintf("cookies-%s.json", site))
 }

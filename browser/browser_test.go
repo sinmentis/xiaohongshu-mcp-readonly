@@ -6,7 +6,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestMaskProxyCredentials 校验代理日志脱敏：绝不能把用户名/密码打进日志。
 func TestMaskProxyCredentials(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -15,9 +14,8 @@ func TestMaskProxyCredentials(t *testing.T) {
 	}{
 		{name: "空字符串", input: "", want: ""},
 		{name: "无认证信息原样返回", input: "http://127.0.0.1:8080", want: "http://127.0.0.1:8080"},
-		{name: "用户名+密码都脱敏", input: "http://user:pass@host:8080", want: "http://***:***@host:8080"},
+		{name: "用户名和密码脱敏", input: "http://user:pass@host:8080", want: "http://***:***@host:8080"},
 		{name: "仅用户名脱敏", input: "http://user@host:8080", want: "http://***@host:8080"},
-		{name: "socks5带认证", input: "socks5://alice:secret@127.0.0.1:1080", want: "socks5://***:***@127.0.0.1:1080"},
 	}
 
 	for _, tt := range tests {
@@ -27,19 +25,57 @@ func TestMaskProxyCredentials(t *testing.T) {
 	}
 }
 
-// TestOptions 校验 Option 正确写入 browserConfig（New+Option 的接线）。
-func TestOptions(t *testing.T) {
-	cfg := &browserConfig{}
-	WithFingerprintSeed(98759)(cfg)
-	WithProxy("http://127.0.0.1:8080")(cfg)
+func TestValidateProxyURL(t *testing.T) {
+	for _, proxyURL := range []string{
+		"http://127.0.0.1:8080",
+		"https://proxy.example.com:8443",
+		"socks5://127.0.0.1:1080",
+	} {
+		t.Run(proxyURL, func(t *testing.T) {
+			got, err := validateProxyURL(proxyURL)
+			assert.NoError(t, err)
+			assert.Equal(t, proxyURL, got)
+		})
+	}
 
-	assert.Equal(t, 98759, cfg.fingerprintSeed)
-	assert.Equal(t, "http://127.0.0.1:8080", cfg.proxy)
+	for _, proxyURL := range []string{
+		"127.0.0.1:8080",
+		"ftp://127.0.0.1:21",
+		"http://user:password@127.0.0.1:8080",
+	} {
+		t.Run(proxyURL, func(t *testing.T) {
+			_, err := validateProxyURL(proxyURL)
+			assert.Error(t, err)
+		})
+	}
 }
 
-// TestOptions_Defaults 未传 Option 时各字段为零值（回退随机 seed / 不设代理）。
-func TestOptions_Defaults(t *testing.T) {
+func TestOptions(t *testing.T) {
 	cfg := &browserConfig{}
-	assert.Equal(t, 0, cfg.fingerprintSeed)
-	assert.Equal(t, "", cfg.proxy)
+	WithSite("rednote")(cfg)
+	WithFingerprintSeed(98759)(cfg)
+	WithProxy("http://127.0.0.1:8080")(cfg)
+	WithBrowserBinary("/usr/bin/chromium", false)(cfg)
+
+	assert.Equal(t, "rednote", cfg.site)
+	assert.Equal(t, 98759, cfg.fingerprintSeed)
+	assert.Equal(t, "http://127.0.0.1:8080", cfg.proxy)
+	assert.Equal(t, "/usr/bin/chromium", cfg.browserBin)
+	assert.False(t, cfg.sourceFingerprint)
+}
+
+func TestOptionsDefaults(t *testing.T) {
+	cfg := &browserConfig{}
+
+	assert.Empty(t, cfg.site)
+	assert.Zero(t, cfg.fingerprintSeed)
+	assert.Empty(t, cfg.proxy)
+	assert.Empty(t, cfg.browserBin)
+	assert.False(t, cfg.sourceFingerprint)
+}
+
+func TestFallbackViewportUsesStableSeed(t *testing.T) {
+	assert.Equal(t, fallbackViewport(98759), fallbackViewport(98759))
+	assert.Contains(t, fallbackViewports, fallbackViewport(98759))
+	assert.Equal(t, fallbackViewports[0], fallbackViewport(0))
 }

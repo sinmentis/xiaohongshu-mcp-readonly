@@ -13,9 +13,9 @@ import (
 	"github.com/avast/retry-go/v4"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/errors"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/humanize"
 	"github.com/sirupsen/logrus"
-	"github.com/xpzouying/xiaohongshu-mcp/errors"
-	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
 
 // ========== 配置常量 ==========
@@ -86,6 +86,7 @@ type FeedDetailAction struct {
 }
 
 func NewFeedDetailAction(page *rod.Page) *FeedDetailAction {
+	applySiteLocale(page)
 	return &FeedDetailAction{page: page}
 }
 
@@ -101,7 +102,7 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	page := f.page.Context(ctx).Timeout(10 * time.Minute)
 	url := makeFeedDetailURL(feedID, xsecToken)
 
-	logrus.Infof("打开 feed 详情页: %s", url)
+	logrus.Infof("Opening feed detail page for feed %s", feedID)
 	logrus.Infof("配置: 点击更多=%v, 回复阈值=%d, 最大评论数=%d, 滚动速度=%s",
 		config.ClickMoreReplies, config.MaxRepliesThreshold, config.MaxCommentItems, config.ScrollSpeed)
 
@@ -1001,5 +1002,5 @@ func (f *FeedDetailAction) extractFeedDetail(page *rod.Page, feedID string) (*Fe
 }
 
 func makeFeedDetailURL(feedID, xsecToken string) string {
-	return fmt.Sprintf("https://www.xiaohongshu.com/explore/%s?xsec_token=%s&xsec_source=pc_feed", feedID, xsecToken)
+	return fmt.Sprintf("%s/explore/%s?xsec_token=%s&xsec_source=pc_feed", Site().Base, feedID, xsecToken)
 }

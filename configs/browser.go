@@ -13,6 +13,10 @@ var (
 	fingerprintSeed = 0
 
 	proxy = ""
+
+	browserBin = ""
+
+	browserSourceFingerprint = false
 )
 
 func InitHeadless(h bool) {
@@ -58,4 +62,17 @@ func Proxy() string {
 // ProxyFromEnv 从 XHS_PROXY 环境变量读取代理地址。env 读取集中在配置层。
 func ProxyFromEnv() string {
 	return os.Getenv("XHS_PROXY")
+}
+
+func SetBrowser(path string, sourceFingerprint bool) {
+	browserBin = path
+	browserSourceFingerprint = sourceFingerprint
+}
+
+func BrowserBin() string {
+	return browserBin
+}
+
+func BrowserSourceFingerprint() bool {
+	return browserSourceFingerprint
 }

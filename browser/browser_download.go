@@ -3,7 +3,6 @@ package browser
 import (
 	"archive/tar"
 	"archive/zip"
-	"bufio"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -30,6 +29,9 @@ const browserCDNBase = "https://cdn.one-world.ai/browsers"
 var browserVersionRaw string
 
 var browserVersion = strings.TrimSpace(browserVersionRaw)
+
+//go:embed browser_sha256s.txt
+var browserSHA256sRaw string
 
 func browserURL(name string) string {
 	return browserCDNBase + "/" + browserVersion + "/" + name
@@ -63,7 +65,7 @@ func browserCacheDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "xiaohongshu-mcp", "browser", browserVersion), nil
+	return filepath.Join(base, "xiaohongshu-mcp-readonly", "browser", browserVersion), nil
 }
 
 // EnsureBrowser 确保本地存在内置浏览器二进制，返回其路径。
@@ -101,9 +103,7 @@ func EnsureBrowser() (string, error) {
 		time.Sleep(2 * time.Second)
 	}
 	if dlErr != nil {
-		return "", fmt.Errorf("下载内置浏览器失败: %w\n"+
-			"  本项目只用内置浏览器，缺它不继续。请检查网络后重试；\n"+
-			"  离线环境可手动下载 %s，解压到 %s 后重启。", dlErr, browserURL(asset), cacheDir)
+		return "", fmt.Errorf("download bundled browser: %w", dlErr)
 	}
 	defer os.Remove(archivePath)
 
@@ -125,9 +125,9 @@ func EnsureBrowser() (string, error) {
 	return bin, nil
 }
 
-// verifySHA256 下载同目录的 SHA256SUMS，校验 asset 的哈希。
+// verifySHA256 使用仓库内固定的 SHA256 校验浏览器归档。
 func verifySHA256(archivePath, asset string) error {
-	want, err := fetchExpectedSHA(asset)
+	want, err := expectedSHA(asset)
 	if err != nil {
 		return err
 	}
@@ -147,24 +147,14 @@ func verifySHA256(archivePath, asset string) error {
 	return nil
 }
 
-func fetchExpectedSHA(asset string) (string, error) {
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Get(browserURL("SHA256SUMS"))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("获取 SHA256SUMS: HTTP %d", resp.StatusCode)
-	}
-	sc := bufio.NewScanner(resp.Body)
-	for sc.Scan() {
-		// 格式：<hash>␠␠<filename>
-		fields := strings.Fields(sc.Text())
+func expectedSHA(asset string) (string, error) {
+	for _, line := range strings.Split(browserSHA256sRaw, "\n") {
+		fields := strings.Fields(line)
 		if len(fields) == 2 && fields[1] == asset {
 			return fields[0], nil
 		}
 	}
-	return "", fmt.Errorf("SHA256SUMS 中未找到 %s", asset)
+	return "", fmt.Errorf("browser_sha256s.txt does not contain %s", asset)
 }
 
 func findBinary(dir, binName string) string {
@@ -236,7 +226,10 @@ func extractTarXz(archivePath, destDir string) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(destDir, hdr.Name)
+		target, err := archiveTarget(destDir, hdr.Name)
+		if err != nil {
+			return err
+		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
@@ -246,18 +239,23 @@ func extractTarXz(archivePath, destDir string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+			mode := hdr.FileInfo().Mode().Perm()
+			if mode == 0 {
+				mode = 0o644
+			}
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 			if err != nil {
 				return err
 			}
 			if _, err := io.Copy(out, tr); err != nil {
-				out.Close()
+				_ = out.Close()
 				return err
 			}
-			out.Close()
-		case tar.TypeSymlink:
-			_ = os.MkdirAll(filepath.Dir(target), 0o755)
-			_ = os.Symlink(hdr.Linkname, target)
+			if err := out.Close(); err != nil {
+				return err
+			}
+		case tar.TypeSymlink, tar.TypeLink:
+			return fmt.Errorf("browser archive contains a disallowed link: %s", hdr.Name)
 		}
 	}
 	return nil
@@ -270,7 +268,13 @@ func extractZip(archivePath, destDir string) error {
 	}
 	defer zr.Close()
 	for _, zf := range zr.File {
-		target := filepath.Join(destDir, zf.Name)
+		target, err := archiveTarget(destDir, zf.Name)
+		if err != nil {
+			return err
+		}
+		if zf.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("browser archive contains a disallowed link: %s", zf.Name)
+		}
 		if zf.FileInfo().IsDir() {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
@@ -289,14 +293,43 @@ func extractZip(archivePath, destDir string) error {
 			rc.Close()
 			return err
 		}
-		_, err = io.Copy(out, rc)
-		out.Close()
-		rc.Close()
-		if err != nil {
+		if _, err := io.Copy(out, rc); err != nil {
+			_ = out.Close()
+			_ = rc.Close()
+			return err
+		}
+		if err := out.Close(); err != nil {
+			_ = rc.Close()
+			return err
+		}
+		if err := rc.Close(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func archiveTarget(destDir, name string) (string, error) {
+	if name == "" || filepath.IsAbs(name) {
+		return "", fmt.Errorf("invalid browser archive path: %q", name)
+	}
+
+	root, err := filepath.Abs(destDir)
+	if err != nil {
+		return "", err
+	}
+	target, err := filepath.Abs(filepath.Join(root, filepath.Clean(name)))
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(root, target)
+	if err != nil {
+		return "", err
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("browser archive path escapes destination: %q", name)
+	}
+	return target, nil
 }
 
 func extractDmg(archivePath, destDir string) error {

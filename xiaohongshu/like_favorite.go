@@ -8,9 +8,9 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/pkg/errors"
+	myerrors "github.com/sinmentis/xiaohongshu-mcp-readonly/errors"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/humanize"
 	"github.com/sirupsen/logrus"
-	myerrors "github.com/xpzouying/xiaohongshu-mcp/errors"
-	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
 
 // ActionResult 通用动作响应（点赞/收藏等）
@@ -46,7 +46,7 @@ func newInteractAction(page *rod.Page) *interactAction {
 func (a *interactAction) preparePage(ctx context.Context, actionType interactActionType, feedID, xsecToken string) *rod.Page {
 	page := a.page.Context(ctx).Timeout(60 * time.Second)
 	url := makeFeedDetailURL(feedID, xsecToken)
-	logrus.Infof("Opening feed detail page for %s: %s", actionType, url)
+	logrus.Infof("Opening feed detail page for %s on feed %s", actionType, feedID)
 
 	page.MustNavigate(url)
 	page.MustWaitDOMStable()

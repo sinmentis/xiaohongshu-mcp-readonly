@@ -8,8 +8,8 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/pkg/errors"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/humanize"
 	"github.com/sirupsen/logrus"
-	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
 
 // PublishVideoContent 发布视频内容
@@ -27,7 +27,8 @@ type PublishVideoContent struct {
 func NewPublishVideoAction(page *rod.Page) (*PublishAction, error) {
 	pp := page.Timeout(300 * time.Second)
 
-	if err := pp.Navigate(urlOfPublic); err != nil {
+	applySiteLocale(pp)
+	if err := pp.Navigate(Site().PublishURL); err != nil {
 		return nil, errors.Wrap(err, "导航到发布页面失败")
 	}
 

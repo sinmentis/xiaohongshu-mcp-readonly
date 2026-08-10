@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/xpzouying/xiaohongshu-mcp/humanize"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/humanize"
 )
 
 // ProfileTab 个人主页的子 tab。
@@ -46,6 +46,7 @@ type UserProfileAction struct {
 
 func NewUserProfileAction(page *rod.Page) *UserProfileAction {
 	pp := page.Timeout(60 * time.Second)
+	applySiteLocale(pp)
 	return &UserProfileAction{page: pp}
 }
 
@@ -138,7 +139,7 @@ func (u *UserProfileAction) extractUserProfileData(page *rod.Page, tab ProfileTa
 }
 
 func makeUserProfileURL(userID, xsecToken string, tab ProfileTab) string {
-	url := fmt.Sprintf("https://www.xiaohongshu.com/user/profile/%s?xsec_token=%s&xsec_source=pc_note", userID, xsecToken)
+	url := fmt.Sprintf("%s/user/profile/%s?xsec_token=%s&xsec_source=pc_note", Site().Base, userID, xsecToken)
 	if tab != "" && tab != TabNotes {
 		url += fmt.Sprintf("&tab=%s&subTab=note", tab)
 	}

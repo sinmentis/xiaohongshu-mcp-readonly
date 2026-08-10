@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/browser"
 	"github.com/stretchr/testify/require"
-	"github.com/xpzouying/xiaohongshu-mcp/browser"
 )
 
 func TestGetFeedsList(t *testing.T) {

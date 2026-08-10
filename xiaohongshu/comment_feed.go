@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/humanize"
 	"github.com/sirupsen/logrus"
-	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
 
 // CommentFeedAction 表示 Feed 评论动作
@@ -17,6 +17,7 @@ type CommentFeedAction struct {
 
 // NewCommentFeedAction 创建 Feed 评论动作
 func NewCommentFeedAction(page *rod.Page) *CommentFeedAction {
+	applySiteLocale(page)
 	return &CommentFeedAction{page: page}
 }
 
@@ -26,7 +27,7 @@ func (f *CommentFeedAction) PostComment(ctx context.Context, feedID, xsecToken, 
 	page := f.page.Timeout(60 * time.Second)
 
 	url := makeFeedDetailURL(feedID, xsecToken)
-	logrus.Infof("打开 feed 详情页: %s", url)
+	logrus.Infof("Opening feed detail page for feed %s", feedID)
 
 	// 导航到详情页
 	page.MustNavigate(url)
@@ -116,7 +117,7 @@ func (f *CommentFeedAction) ReplyToComment(ctx context.Context, feedID, xsecToke
 	// 注意：不使用 Context(ctx)，避免继承外部 context 的超时
 	page := f.page.Timeout(5 * time.Minute)
 	url := makeFeedDetailURL(feedID, xsecToken)
-	logrus.Infof("打开 feed 详情页进行回复: %s", url)
+	logrus.Infof("Opening feed detail page to reply on feed %s", feedID)
 
 	// 导航到详情页
 	page.MustNavigate(url)

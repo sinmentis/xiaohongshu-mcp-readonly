@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Xiaohongshu login</title>
+  <link rel="icon" href="/login/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/login/styles.css">
+  <script src="/login/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="brand">
+      <span class="brand-mark" aria-hidden="true">R</span>
+      <span id="brand-label">Xiaohongshu read-only</span>
+    </header>
+
+    <section class="login-layout">
+      <div class="intro">
+        <p class="eyebrow">Local account connection</p>
+        <h1>Sign in from any browser.</h1>
+        <p class="lede">
+          This page runs only on your machine. It keeps one browser session alive,
+          follows every verification step, and stores the site-specific session.
+        </p>
+
+        <ol class="steps">
+          <li><span>1</span>Scan the login code.</li>
+          <li><span>2</span>Confirm the sign-in on your phone.</li>
+          <li><span>3</span>Scan a device-verification code if Xiaohongshu requests one.</li>
+        </ol>
+
+        <p class="privacy">
+          The MCP remains read-only. Signing in does not enable publishing,
+          commenting, liking, or favoriting.
+        </p>
+      </div>
+
+      <section class="login-panel" aria-labelledby="stage-title" aria-live="polite">
+        <div class="status-line">
+          <span id="status-dot" class="status-dot is-working" aria-hidden="true"></span>
+          <span id="status-label">Starting local login session</span>
+        </div>
+
+        <div id="qr-frame" class="qr-frame is-loading">
+          <img id="qr-image" alt="Current Xiaohongshu login QR code" hidden>
+          <div id="qr-placeholder" class="qr-placeholder">
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Preparing secure browser session...</span>
+          </div>
+        </div>
+
+        <div class="stage-copy">
+          <h2 id="stage-title">Starting sign-in</h2>
+          <p id="stage-detail">
+            The first launch can take up to a minute while the protected browser starts.
+          </p>
+          <p id="session-time" class="session-time"></p>
+        </div>
+
+        <button id="retry-button" class="retry-button" type="button" hidden>
+          Start a new login session
+        </button>
+      </section>
+    </section>
+
+    <footer>
+      Opened from <code>127.0.0.1</code>. Login state is stored only on this machine.
+    </footer>
+  </main>
+</body>
+</html>

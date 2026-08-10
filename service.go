@@ -3,29 +3,46 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/browser"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/configs"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/cookies"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/pkg/downloader"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/pkg/xhsutil"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/xiaohongshu"
 	"github.com/sirupsen/logrus"
-	"github.com/xpzouying/headless_browser"
-	"github.com/xpzouying/xiaohongshu-mcp/browser"
-	"github.com/xpzouying/xiaohongshu-mcp/configs"
-	"github.com/xpzouying/xiaohongshu-mcp/cookies"
-	"github.com/xpzouying/xiaohongshu-mcp/pkg/downloader"
-	"github.com/xpzouying/xiaohongshu-mcp/pkg/xhsutil"
-	"github.com/xpzouying/xiaohongshu-mcp/xiaohongshu"
 )
 
 // XiaohongshuService 小红书业务服务
 type XiaohongshuService struct {
-	logins loginSessions
+	logins     loginSessions
+	accessGate *accessGate
+	policy     AccessPolicy
 }
 
+const (
+	loginStateCacheTTL              = 90 * time.Second
+	loginSessionTimeout             = 10 * time.Minute
+	loginStabilityWindow            = 3 * time.Second
+	persistedLoginVerificationLimit = 60 * time.Second
+)
+
 // NewXiaohongshuService 创建小红书服务实例
-func NewXiaohongshuService() *XiaohongshuService {
-	return &XiaohongshuService{}
+func NewXiaohongshuService(policies ...AccessPolicy) *XiaohongshuService {
+	policy := DefaultAccessPolicy()
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+
+	return &XiaohongshuService{
+		accessGate: newAccessGate(policy.MinInterval, policy.MaxJitter),
+		policy:     policy,
+	}
 }
 
 // PublishRequest 发布请求
@@ -42,16 +59,20 @@ type PublishRequest struct {
 
 // LoginStatusResponse 登录状态响应
 type LoginStatusResponse struct {
-	IsLoggedIn bool   `json:"is_logged_in"`
-	Username   string `json:"username,omitempty"` // 当前登录账号的昵称
-	UserID     string `json:"user_id,omitempty"`  // 用户唯一标识（个人主页 URL 中的 ID）
+	IsLoggedIn bool                   `json:"is_logged_in"`
+	Stage      xiaohongshu.LoginStage `json:"stage,omitempty"`
+	Username   string                 `json:"username,omitempty"` // 当前登录账号的昵称
+	UserID     string                 `json:"user_id,omitempty"`  // 用户唯一标识（个人主页 URL 中的 ID）
 }
 
 // LoginQrcodeResponse 登录扫码二维码
 type LoginQrcodeResponse struct {
-	Timeout    string `json:"timeout"`
-	IsLoggedIn bool   `json:"is_logged_in"`
-	Img        string `json:"img,omitempty"`
+	Timeout    string                 `json:"timeout"`
+	Active     bool                   `json:"active"`
+	IsLoggedIn bool                   `json:"is_logged_in"`
+	Stage      xiaohongshu.LoginStage `json:"stage"`
+	Site       string                 `json:"site"`
+	Img        string                 `json:"img,omitempty"`
 }
 
 // PublishResponse 发布响应
@@ -96,109 +117,329 @@ type UserProfileResponse struct {
 
 // DeleteCookies 删除 cookies 文件，用于登录重置
 func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
-	cookiePath := cookies.GetCookiesFilePath()
+	cookiePath := cookies.GetCookiesFilePathForSite(xiaohongshu.Site().Name)
 	cookieLoader := cookies.NewLoadCookie(cookiePath)
 	return cookieLoader.DeleteCookies()
 }
 
 // CheckLoginStatus 检查登录状态
 func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatusResponse, error) {
+	if session := s.logins.active(); session != nil {
+		state, err := session.currentState(ctx)
+		if err == nil {
+			state = publicLoginState(state)
+			return &LoginStatusResponse{
+				IsLoggedIn: state.Stage == xiaohongshu.LoginStageLoggedIn,
+				Stage:      state.Stage,
+			}, nil
+		}
+		if !errors.Is(err, errLoginSessionClosed) {
+			return nil, err
+		}
+	}
+	if state, ok := s.logins.recentState(loginStateCacheTTL); ok {
+		return &LoginStatusResponse{
+			IsLoggedIn: state.Stage == xiaohongshu.LoginStageLoggedIn,
+			Stage:      state.Stage,
+		}, nil
+	}
+
+	return withReadAccess(s, ctx, "检查登录状态", func() (*LoginStatusResponse, error) {
+		b := newBrowser()
+		defer b.Close()
+
+		page := b.NewPage()
+		defer page.Close()
+
+		loginAction := xiaohongshu.NewLogin(page)
+
+		state, err := loginAction.CheckLoginState(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		response := &LoginStatusResponse{
+			IsLoggedIn: state.Stage == xiaohongshu.LoginStageLoggedIn,
+			Stage:      state.Stage,
+		}
+		if response.IsLoggedIn {
+			s.logins.remember(state)
+		}
+
+		// 已登录时从当前页读取真实账号信息；读不到只记 warn，不影响状态返回。
+		if response.IsLoggedIn {
+			if user, err := loginAction.CurrentUser(ctx); err != nil {
+				logrus.Warnf("failed to get current user info: %v", err)
+			} else {
+				response.Username = user.Nickname
+				response.UserID = user.UserID
+			}
+		}
+
+		return response, nil
+	})
+}
+
+// GetLoginQrcode 获取登录的扫码二维码
+func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeResponse, error) {
+	if response, found, err := s.currentLoginQrcode(ctx); err != nil {
+		return response, err
+	} else if found {
+		return response, nil
+	}
+
+	return withReadAccess(s, ctx, "获取登录二维码", func() (*LoginQrcodeResponse, error) {
+		if response, found, err := s.currentLoginQrcode(ctx); err != nil {
+			return response, err
+		} else if found {
+			return response, nil
+		}
+
+		b := newBrowser()
+		page := b.NewPage()
+
+		closeBrowser := func() {
+			_ = page.Close()
+			b.Close()
+		}
+
+		loginAction := xiaohongshu.NewLogin(page)
+
+		state, err := loginAction.FetchLoginState(ctx)
+		if err != nil {
+			closeBrowser()
+			return nil, err
+		}
+		if state.Stage == xiaohongshu.LoginStageLoggedIn {
+			closeBrowser()
+			s.logins.remember(state)
+			return loginQrcodeResponse(state, 0, false), nil
+		}
+		if state.QRCode == "" {
+			closeBrowser()
+			return nil, fmt.Errorf("登录页面没有可用二维码，当前阶段: %s", state.Stage)
+		}
+
+		timeout := loginSessionTimeout
+		expiresAt := time.Now().Add(timeout)
+		ctxTimeout, cancel := context.WithDeadline(context.Background(), expiresAt)
+		session := newLoginSession(
+			expiresAt,
+			cancel,
+			loginAction.CurrentState,
+			func() error { return saveCookies(page) },
+			closeBrowser,
+		)
+		seq := s.logins.start(session)
+		s.waitScanInBackground(ctxTimeout, session, seq, timeout)
+
+		return loginQrcodeResponse(state, timeout, true), nil
+	})
+}
+
+func (s *XiaohongshuService) LoginSessionState(
+	ctx context.Context,
+) (*LoginQrcodeResponse, error) {
+	if response, found, err := s.currentLoginQrcode(ctx); found || err != nil {
+		return response, err
+	}
+	return loginQrcodeResponse(
+		xiaohongshu.LoginState{Stage: xiaohongshu.LoginStageIdle},
+		0,
+		false,
+	), nil
+}
+
+func (s *XiaohongshuService) currentLoginQrcode(
+	ctx context.Context,
+) (*LoginQrcodeResponse, bool, error) {
+	session := s.logins.active()
+	if session != nil {
+		state, err := session.currentState(ctx)
+		if err == nil {
+			state = publicLoginState(state)
+			return loginQrcodeResponse(state, session.remaining(), true), true, nil
+		}
+		if !errors.Is(err, errLoginSessionClosed) {
+			return nil, true, err
+		}
+	}
+
+	if state, ok := s.logins.consumeRecentState(
+		loginStateCacheTTL,
+		xiaohongshu.LoginStagePersistenceFailed,
+	); ok {
+		return loginQrcodeResponse(state, 0, false), true, nil
+	}
+	if state, ok := s.logins.recentState(loginStateCacheTTL); ok {
+		return loginQrcodeResponse(state, 0, false), true, nil
+	}
+	return nil, false, nil
+}
+
+func publicLoginState(state xiaohongshu.LoginState) xiaohongshu.LoginState {
+	if state.Stage == xiaohongshu.LoginStageLoggedIn {
+		return xiaohongshu.LoginState{Stage: xiaohongshu.LoginStageVerifying}
+	}
+	return state
+}
+
+func loginQrcodeResponse(
+	state xiaohongshu.LoginState,
+	timeout time.Duration,
+	active bool,
+) *LoginQrcodeResponse {
+	if timeout < 0 {
+		timeout = 0
+	}
+	return &LoginQrcodeResponse{
+		Timeout:    timeout.Round(time.Second).String(),
+		Active:     active,
+		IsLoggedIn: state.Stage == xiaohongshu.LoginStageLoggedIn,
+		Stage:      state.Stage,
+		Site:       xiaohongshu.Site().Name,
+		Img:        state.QRCode,
+	}
+}
+
+// waitScanInBackground 等到最终登录态后才保存 cookies。
+func (s *XiaohongshuService) waitScanInBackground(
+	ctx context.Context,
+	session *loginSession,
+	seq uint64,
+	timeout time.Duration,
+) {
+	logrus.Infof("等待扫码登录，会话 #%d，超时 %s", seq, timeout)
+
+	go func() {
+		completed := false
+		defer func() {
+			if !completed {
+				s.logins.finish(seq)
+			}
+		}()
+
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
+		lastStage := xiaohongshu.LoginStageUnknown
+		reportedError := false
+		var loggedSince time.Time
+		for {
+			select {
+			case <-ctx.Done():
+				logrus.Infof("登录会话 #%d 结束，未完成最终登录", seq)
+				return
+			case <-ticker.C:
+				state, err := session.currentState(ctx)
+				if err != nil {
+					if errors.Is(err, context.Canceled) ||
+						errors.Is(err, context.DeadlineExceeded) ||
+						errors.Is(err, errLoginSessionClosed) {
+						return
+					}
+					if !reportedError {
+						logrus.Warnf("登录会话 #%d 状态检测失败: %v", seq, err)
+						reportedError = true
+					}
+					continue
+				}
+				reportedError = false
+
+				if state.Stage != lastStage {
+					logLoginStage(seq, state.Stage)
+					lastStage = state.Stage
+				}
+				if state.Stage != xiaohongshu.LoginStageLoggedIn {
+					loggedSince = time.Time{}
+					continue
+				}
+				if loggedSince.IsZero() {
+					loggedSince = time.Now()
+					continue
+				}
+				if time.Since(loggedSince) < loginStabilityWindow {
+					continue
+				}
+
+				if err := session.saveCookies(); err != nil {
+					logrus.Errorf("候选登录成功但保存 cookies 失败，会话 #%d: %v", seq, err)
+					return
+				}
+				s.logins.remember(xiaohongshu.LoginState{Stage: xiaohongshu.LoginStageVerifying})
+				s.logins.finish(seq)
+				completed = true
+
+				if err := s.verifyRestoredLogin(); err != nil {
+					s.logins.remember(xiaohongshu.LoginState{
+						Stage: xiaohongshu.LoginStagePersistenceFailed,
+					})
+					logrus.Errorf("登录未通过站点会话复验，会话 #%d: %v", seq, err)
+					return
+				}
+
+				s.logins.remember(state)
+				logrus.Infof("最终登录成功，站点会话复验通过，会话 #%d", seq)
+				return
+			}
+		}
+	}()
+}
+
+func (s *XiaohongshuService) verifyRestoredLogin() error {
+	_, err := withReadAccess(
+		s,
+		context.Background(),
+		"verify saved login",
+		func() (struct{}, error) {
+			return struct{}{}, verifyRestoredLogin()
+		},
+	)
+	return err
+}
+
+func verifyRestoredLogin() (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("重开站点浏览器失败: %v", recovered)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		persistedLoginVerificationLimit,
+	)
+	defer cancel()
+
 	b := newBrowser()
 	defer b.Close()
 
 	page := b.NewPage()
 	defer page.Close()
 
-	loginAction := xiaohongshu.NewLogin(page)
-
-	isLoggedIn, err := loginAction.CheckLoginStatus(ctx)
+	state, err := xiaohongshu.NewLogin(page).CheckLoginState(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	response := &LoginStatusResponse{
-		IsLoggedIn: isLoggedIn,
+	if state.Stage != xiaohongshu.LoginStageLoggedIn {
+		return fmt.Errorf("恢复站点会话后的登录阶段为 %s", state.Stage)
 	}
-
-	// 已登录时从当前页读取真实账号信息；读不到只记 warn，不影响状态返回。
-	if isLoggedIn {
-		if user, err := loginAction.CurrentUser(ctx); err != nil {
-			logrus.Warnf("failed to get current user info: %v", err)
-		} else {
-			response.Username = user.Nickname
-			response.UserID = user.UserID
-		}
-	}
-
-	return response, nil
+	return nil
 }
 
-// GetLoginQrcode 获取登录的扫码二维码
-func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeResponse, error) {
-	b := newBrowser()
-	page := b.NewPage()
-
-	deferFunc := func() {
-		_ = page.Close()
-		b.Close()
+func logLoginStage(seq uint64, stage xiaohongshu.LoginStage) {
+	switch stage {
+	case xiaohongshu.LoginStageDeviceVerification:
+		logrus.Infof("登录会话 #%d 需要设备安全验证二维码", seq)
+	case xiaohongshu.LoginStageWaitingConfirmation:
+		logrus.Infof("登录会话 #%d 等待手机端确认", seq)
+	case xiaohongshu.LoginStageQRCode:
+		logrus.Infof("登录会话 #%d 等待扫描登录二维码", seq)
+	case xiaohongshu.LoginStageLoggedIn:
+		logrus.Infof("登录会话 #%d 检测到候选登录状态，等待稳定后复验", seq)
+	default:
+		logrus.Infof("登录会话 #%d 当前阶段未知", seq)
 	}
-
-	loginAction := xiaohongshu.NewLogin(page)
-
-	img, loggedIn, err := loginAction.FetchQrcodeImage(ctx)
-	if err != nil || loggedIn {
-		defer deferFunc()
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	timeout := 4 * time.Minute
-
-	if !loggedIn {
-		s.waitScanInBackground(loginAction, page, deferFunc, timeout)
-	}
-
-	return &LoginQrcodeResponse{
-		Timeout: func() string {
-			if loggedIn {
-				return "0s"
-			}
-			return timeout.String()
-		}(),
-		Img:        img,
-		IsLoggedIn: loggedIn,
-	}, nil
-}
-
-// waitScanInBackground 在后台等用户扫码，扫上了就存 cookie。
-//
-// 浏览器必须一直活着才检测得到扫码，所以这里不能提前关；但也不能任由它堆积——
-// 再取一次二维码就会把上一个还在等的会话关掉，同一时刻只留一个。
-func (s *XiaohongshuService) waitScanInBackground(
-	loginAction *xiaohongshu.LoginAction, page *rod.Page, closeBrowser func(), timeout time.Duration,
-) {
-	ctxTimeout, cancel := context.WithTimeout(context.Background(), timeout)
-	seq := s.logins.start(cancel)
-	logrus.Infof("等待扫码登录，会话 #%d，超时 %s", seq, timeout)
-
-	go func() {
-		defer closeBrowser()
-		defer cancel()
-		defer s.logins.finish(seq)
-
-		if loginAction.WaitForLogin(ctxTimeout) {
-			if err := saveCookies(page); err != nil {
-				logrus.Errorf("扫码成功但保存 cookies 失败，会话 #%d: %v", seq, err)
-				return
-			}
-			logrus.Infof("扫码登录成功，cookies 已保存，会话 #%d", seq)
-			return
-		}
-
-		// 没等到扫码：要么超时，要么被新取的二维码取代
-		logrus.Infof("登录会话 #%d 结束，未检测到扫码（超时或已被新的二维码取代）", seq)
-	}()
 }
 
 // PublishContent 发布内容
@@ -367,48 +608,52 @@ func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongs
 
 // ListFeeds 获取Feeds列表
 func (s *XiaohongshuService) ListFeeds(ctx context.Context) (*FeedsListResponse, error) {
-	b := newBrowser()
-	defer b.Close()
+	return withReadAccess(s, ctx, "读取首页列表", func() (*FeedsListResponse, error) {
+		b := newBrowser()
+		defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+		page := b.NewPage()
+		defer page.Close()
 
-	action := xiaohongshu.NewFeedsListAction(page)
+		action := xiaohongshu.NewFeedsListAction(page)
 
-	feeds, err := action.GetFeedsList(ctx)
-	if err != nil {
-		logrus.Errorf("获取 Feeds 列表失败: %v", err)
-		return nil, err
-	}
+		feeds, err := action.GetFeedsList(ctx)
+		if err != nil {
+			logrus.Errorf("获取 Feeds 列表失败: %v", err)
+			return nil, err
+		}
 
-	response := &FeedsListResponse{
-		Feeds: feeds,
-		Count: len(feeds),
-	}
+		response := &FeedsListResponse{
+			Feeds: feeds,
+			Count: len(feeds),
+		}
 
-	return response, nil
+		return response, nil
+	})
 }
 
 func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, filters ...xiaohongshu.FilterOption) (*FeedsListResponse, error) {
-	b := newBrowser()
-	defer b.Close()
+	return withReadAccess(s, ctx, "搜索笔记", func() (*FeedsListResponse, error) {
+		b := newBrowser()
+		defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+		page := b.NewPage()
+		defer page.Close()
 
-	action := xiaohongshu.NewSearchAction(page)
+		action := xiaohongshu.NewSearchAction(page)
 
-	feeds, err := action.Search(ctx, keyword, filters...)
-	if err != nil {
-		return nil, err
-	}
+		feeds, err := action.Search(ctx, keyword, filters...)
+		if err != nil {
+			return nil, err
+		}
 
-	response := &FeedsListResponse{
-		Feeds: feeds,
-		Count: len(feeds),
-	}
+		response := &FeedsListResponse{
+			Feeds: feeds,
+			Count: len(feeds),
+		}
 
-	return response, nil
+		return response, nil
+	})
 }
 
 // GetFeedDetail 获取Feed详情
@@ -418,25 +663,31 @@ func (s *XiaohongshuService) GetFeedDetail(ctx context.Context, feedID, xsecToke
 
 // GetFeedDetailWithConfig 使用配置获取Feed详情
 func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config xiaohongshu.CommentLoadConfig) (*FeedDetailResponse, error) {
-	b := newBrowser()
-	defer b.Close()
-
-	page := b.NewPage()
-	defer page.Close()
-
-	action := xiaohongshu.NewFeedDetailAction(page)
-
-	result, err := action.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAllComments, config)
-	if err != nil {
-		return nil, err
+	if loadAllComments {
+		config = s.enforceCommentPolicy(config)
 	}
 
-	response := &FeedDetailResponse{
-		FeedID: feedID,
-		Data:   result,
-	}
+	return withReadAccess(s, ctx, "读取笔记详情", func() (*FeedDetailResponse, error) {
+		b := newBrowser()
+		defer b.Close()
 
-	return response, nil
+		page := b.NewPage()
+		defer page.Close()
+
+		action := xiaohongshu.NewFeedDetailAction(page)
+
+		result, err := action.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAllComments, config)
+		if err != nil {
+			return nil, err
+		}
+
+		response := &FeedDetailResponse{
+			FeedID: feedID,
+			Data:   result,
+		}
+
+		return response, nil
+	})
 }
 
 // UserProfile 获取用户信息
@@ -446,26 +697,62 @@ func (s *XiaohongshuService) UserProfile(ctx context.Context, userID, xsecToken,
 		return nil, err
 	}
 
-	b := newBrowser()
-	defer b.Close()
+	return withReadAccess(s, ctx, "读取用户主页", func() (*UserProfileResponse, error) {
+		b := newBrowser()
+		defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+		page := b.NewPage()
+		defer page.Close()
 
-	action := xiaohongshu.NewUserProfileAction(page)
+		action := xiaohongshu.NewUserProfileAction(page)
 
-	result, err := action.UserProfile(ctx, userID, xsecToken, parsed)
-	if err != nil {
-		return nil, err
+		result, err := action.UserProfile(ctx, userID, xsecToken, parsed)
+		if err != nil {
+			return nil, err
+		}
+		response := &UserProfileResponse{
+			UserBasicInfo: result.UserBasicInfo,
+			Interactions:  result.Interactions,
+			Feeds:         result.Feeds,
+		}
+
+		return response, nil
+	})
+}
+
+func (s *XiaohongshuService) enforceCommentPolicy(config xiaohongshu.CommentLoadConfig) xiaohongshu.CommentLoadConfig {
+	defaults := xiaohongshu.DefaultCommentLoadConfig()
+
+	if config.MaxCommentItems <= 0 {
+		config.MaxCommentItems = defaults.MaxCommentItems
 	}
-	response := &UserProfileResponse{
-		UserBasicInfo: result.UserBasicInfo,
-		Interactions:  result.Interactions,
-		Feeds:         result.Feeds,
+	if config.MaxCommentItems > s.policy.MaxComments {
+		logrus.Infof(
+			"访问保护: 一级评论数量已从 %d 调整为 %d",
+			config.MaxCommentItems,
+			s.policy.MaxComments,
+		)
+		config.MaxCommentItems = s.policy.MaxComments
 	}
 
-	return response, nil
+	if config.MaxRepliesThreshold <= 0 {
+		config.MaxRepliesThreshold = defaults.MaxRepliesThreshold
+	}
+	if config.ClickMoreReplies && config.MaxRepliesThreshold > s.policy.MaxReplies {
+		logrus.Infof(
+			"访问保护: 单条评论回复阈值已从 %d 调整为 %d",
+			config.MaxRepliesThreshold,
+			s.policy.MaxReplies,
+		)
+		config.MaxRepliesThreshold = s.policy.MaxReplies
+	}
 
+	if config.ScrollSpeed != "" && config.ScrollSpeed != "slow" {
+		logrus.Infof("访问保护: 评论滚动速度已从 %s 调整为 slow", config.ScrollSpeed)
+	}
+	config.ScrollSpeed = "slow"
+
+	return config
 }
 
 // PostCommentToFeed 发表评论到Feed
@@ -617,10 +904,12 @@ func (s *XiaohongshuService) ReplyNotification(ctx context.Context, commentID, c
 	return xiaohongshu.NewNotificationAction(page).Reply(ctx, commentID, content)
 }
 
-func newBrowser() *headless_browser.Browser {
+func newBrowser() *browser.Browser {
 	return browser.NewBrowser(configs.IsHeadless(),
+		browser.WithBrowserBinary(configs.BrowserBin(), configs.BrowserSourceFingerprint()),
 		browser.WithFingerprintSeed(configs.FingerprintSeed()),
 		browser.WithProxy(configs.Proxy()),
+		browser.WithSite(xiaohongshu.Site().Name),
 	)
 }
 
@@ -635,7 +924,9 @@ func saveCookies(page *rod.Page) error {
 		return err
 	}
 
-	cookieLoader := cookies.NewLoadCookie(cookies.GetCookiesFilePath())
+	cookieLoader := cookies.NewLoadCookie(
+		cookies.GetCookiesFilePathForSite(xiaohongshu.Site().Name),
+	)
 	return cookieLoader.SaveCookies(data)
 }
 

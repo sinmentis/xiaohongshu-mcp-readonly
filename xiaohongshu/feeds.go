@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/xpzouying/xiaohongshu-mcp/errors"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/errors"
 )
 
 type FeedsListAction struct {
@@ -17,7 +17,8 @@ type FeedsListAction struct {
 func NewFeedsListAction(page *rod.Page) *FeedsListAction {
 	pp := page.Timeout(60 * time.Second)
 
-	pp.MustNavigate("https://www.xiaohongshu.com")
+	applySiteLocale(pp)
+	pp.MustNavigate(Site().Base)
 	pp.MustWaitDOMStable()
 
 	return &FeedsListAction{page: pp}

@@ -53,11 +53,7 @@ func TestMCPStatelessSinglePost(t *testing.T) {
 	assert.NotEmpty(t, result.Result.Tools, "应返回已注册的工具")
 }
 
-// TestNotificationToolsRegistered 固定通知相关工具已注册到 MCP。
-//
-// 三个工具的注册各是 registerTools 里一段独立代码，漏掉任何一个编译都不会报错，
-// 只有真正调用时才会发现工具不存在。
-func TestNotificationToolsRegistered(t *testing.T) {
+func TestOnlyReadOnlyToolsRegistered(t *testing.T) {
 	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
 	server := httptest.NewServer(router)
 	defer server.Close()
@@ -81,36 +77,117 @@ func TestNotificationToolsRegistered(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
 
-	names := make(map[string]bool, len(result.Result.Tools))
+	names := make([]string, 0, len(result.Result.Tools))
 	for _, tool := range result.Result.Tools {
-		names[tool.Name] = true
+		names = append(names, tool.Name)
 	}
 
-	for _, want := range []string{"get_unread_count", "list_notifications", "reply_notification", "like_notification"} {
-		assert.True(t, names[want], "工具 %s 应已注册", want)
-	}
+	assert.ElementsMatch(t, []string{
+		"check_login_status",
+		"get_login_qrcode",
+		"list_feeds",
+		"search_feeds",
+		"get_feed_detail",
+		"user_profile",
+	}, names)
 }
 
-// TestNotificationRoutesRegistered 固定通知的 HTTP 路由存在。
-//
-// 读路由表而不是发请求：这些 handler 会真的起浏览器访问小红书，
-// 单测里不能碰。
-func TestNotificationRoutesRegistered(t *testing.T) {
+func TestOnlyReadOnlyRoutesRegistered(t *testing.T) {
 	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
 
-	registered := make(map[string]bool)
+	var registered []string
 	for _, r := range router.Routes() {
-		registered[r.Method+" "+r.Path] = true
+		registered = append(registered, r.Method+" "+r.Path)
 	}
 
-	// 列表接口两个参数都可选，GET 也要能进
-	for _, want := range []string{
-		"GET /api/v1/notifications/unread",
-		"GET /api/v1/notifications/list",
-		"POST /api/v1/notifications/list",
-		"POST /api/v1/notifications/reply",
-		"POST /api/v1/notifications/like",
-	} {
-		assert.True(t, registered[want], "路由 %s 应已注册", want)
+	expected := []string{
+		"GET /",
+		"GET /favicon.ico",
+		"GET /health",
+		"GET /login",
+		"GET /login/app.js",
+		"GET /login/favicon.svg",
+		"GET /login/styles.css",
+		"POST /api/v1/login/status",
+		"GET /api/v1/login/session",
+		"POST /api/v1/login/session",
+		"POST /api/v1/feeds/list",
+		"POST /api/v1/feeds/search",
+		"POST /api/v1/feeds/detail",
+		"POST /api/v1/user/profile",
 	}
+
+	for _, method := range []string{
+		http.MethodGet,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodHead,
+		http.MethodOptions,
+		http.MethodDelete,
+		http.MethodConnect,
+		http.MethodTrace,
+	} {
+		expected = append(expected, method+" /mcp", method+" /mcp/*path")
+	}
+
+	assert.ElementsMatch(t, expected, registered)
+}
+
+func TestLocalRequestMiddlewareRejectsRemoteHost(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Host = "example.com:18060"
+
+	router.ServeHTTP(recorder, request)
+
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
+}
+
+func TestLocalRequestMiddlewareRejectsCrossOrigin(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Host = "127.0.0.1:18060"
+	request.Header.Set("Origin", "https://example.com")
+
+	router.ServeHTTP(recorder, request)
+
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
+}
+
+func TestLocalRequestMiddlewareRejectsCrossSiteBrowserRequest(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/login/session", nil)
+	request.Host = "127.0.0.1:18060"
+	request.Header.Set("Sec-Fetch-Site", "cross-site")
+
+	router.ServeHTTP(recorder, request)
+
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
+}
+
+func TestLocalRequestMiddlewareAcceptsSameLoopbackOrigin(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Host = "127.0.0.1:18060"
+	request.Header.Set("Origin", "http://127.0.0.1:18060")
+
+	router.ServeHTTP(recorder, request)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+}
+
+func TestLocalRequestMiddlewareRequiresJSONForPost(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/login/session", nil)
+	request.Host = "127.0.0.1:18060"
+
+	router.ServeHTTP(recorder, request)
+
+	assert.Equal(t, http.StatusUnsupportedMediaType, recorder.Code)
 }

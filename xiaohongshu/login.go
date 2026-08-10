@@ -9,6 +9,45 @@ import (
 	"github.com/pkg/errors"
 )
 
+const (
+	initialLoginQRCodeSelector  = ".login-container .qrcode-img"
+	deviceVerificationSelector  = ".r-captcha-modal .qrcode-img"
+	loginContainerSelector      = ".login-container"
+	loginPageSettleDelay        = 2 * time.Second
+	loginStatusCheckSettleDelay = 1 * time.Second
+	loginStatusCheckTimeout     = 30 * time.Second
+	currentUserReadTimeout      = 10 * time.Second
+	loginStatePollingInterval   = 500 * time.Millisecond
+)
+
+var errCurrentUserNotFound = errors.New("current user not found in page state")
+
+type LoginStage string
+
+const (
+	LoginStageLoggedIn            LoginStage = "logged_in"
+	LoginStageDeviceVerification  LoginStage = "device_verification"
+	LoginStageWaitingConfirmation LoginStage = "waiting_confirmation"
+	LoginStageQRCode              LoginStage = "login_qrcode"
+	LoginStageVerifying           LoginStage = "verifying"
+	LoginStagePersistenceFailed   LoginStage = "persistence_failed"
+	LoginStageIdle                LoginStage = "idle"
+	LoginStageUnknown             LoginStage = "unknown"
+)
+
+type LoginState struct {
+	Stage  LoginStage
+	QRCode string
+}
+
+type loginPageSignals struct {
+	SiteMatched           bool
+	Authenticated         bool
+	DeviceVerificationQR  string
+	InitialLoginQRCode    string
+	LoginContainerVisible bool
+}
+
 type LoginAction struct {
 	page *rod.Page
 }
@@ -18,22 +57,16 @@ func NewLogin(page *rod.Page) *LoginAction {
 }
 
 func (a *LoginAction) CheckLoginStatus(ctx context.Context) (bool, error) {
-	// 加超时保护：只是查登录态的快速检查，不应无限挂（登录扫码的等待在 Login/WaitForLogin 里）
-	pp := a.page.Context(ctx).Timeout(30 * time.Second)
-	pp.MustNavigate("https://www.xiaohongshu.com/explore").MustWaitLoad()
-
-	time.Sleep(1 * time.Second)
-
-	exists, _, err := pp.Has(`.main-container .user .link-wrapper .channel`)
+	state, err := a.CheckLoginState(ctx)
 	if err != nil {
-		return false, errors.Wrap(err, "check login status failed")
+		return false, err
 	}
 
-	if !exists {
-		return false, errors.Wrap(err, "login status element not found")
-	}
+	return state.Stage == LoginStageLoggedIn, nil
+}
 
-	return true, nil
+func (a *LoginAction) CheckLoginState(ctx context.Context) (LoginState, error) {
+	return a.openLoginPage(ctx, loginStatusCheckSettleDelay)
 }
 
 // CurrentUser 当前登录用户的基础信息。
@@ -45,7 +78,7 @@ type CurrentUser struct {
 // CurrentUser 从当前页面的 __INITIAL_STATE__ 读取登录用户信息。
 // 需在 CheckLoginStatus 之后调用：复用已加载的 explore 页，不做额外导航。
 func (a *LoginAction) CurrentUser(ctx context.Context) (*CurrentUser, error) {
-	pp := a.page.Context(ctx).Timeout(10 * time.Second)
+	pp := a.page.Context(ctx).Timeout(currentUserReadTimeout)
 
 	res, err := pp.Eval(`() => {
 		const u = window.__INITIAL_STATE__ && window.__INITIAL_STATE__.user;
@@ -59,7 +92,7 @@ func (a *LoginAction) CurrentUser(ctx context.Context) (*CurrentUser, error) {
 
 	raw := res.Value.String()
 	if raw == "" {
-		return nil, errors.New("current user not found in page state")
+		return nil, errCurrentUserNotFound
 	}
 
 	var user CurrentUser
@@ -71,48 +104,40 @@ func (a *LoginAction) CurrentUser(ctx context.Context) (*CurrentUser, error) {
 }
 
 func (a *LoginAction) Login(ctx context.Context) error {
-	pp := a.page.Context(ctx)
-
-	// 导航到小红书首页，这会触发二维码弹窗
-	pp.MustNavigate("https://www.xiaohongshu.com/explore").MustWaitLoad()
-
-	time.Sleep(2 * time.Second)
-
-	if exists, _, _ := pp.Has(".main-container .user .link-wrapper .channel"); exists {
+	state, err := a.openLoginPage(ctx, loginPageSettleDelay)
+	if err != nil {
+		return err
+	}
+	if state.Stage == LoginStageLoggedIn {
 		return nil
 	}
-
-	pp.MustElement(".main-container .user .link-wrapper .channel")
-
+	if !a.WaitForLogin(ctx) {
+		return errors.New("login was not completed")
+	}
 	return nil
 }
 
 func (a *LoginAction) FetchQrcodeImage(ctx context.Context) (string, bool, error) {
-	pp := a.page.Context(ctx)
-
-	// 导航到小红书首页，这会触发二维码弹窗
-	pp.MustNavigate("https://www.xiaohongshu.com/explore").MustWaitLoad()
-
-	time.Sleep(2 * time.Second)
-
-	if exists, _, _ := pp.Has(".main-container .user .link-wrapper .channel"); exists {
+	state, err := a.FetchLoginState(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if state.Stage == LoginStageLoggedIn {
 		return "", true, nil
 	}
-
-	src, err := pp.MustElement(".login-container .qrcode-img").Attribute("src")
-	if err != nil {
-		return "", false, errors.Wrap(err, "get qrcode src failed")
-	}
-	if src == nil || len(*src) == 0 {
-		return "", false, errors.New("qrcode src is empty")
+	if state.QRCode == "" {
+		return "", false, errors.Errorf("qrcode is not available in login stage %s", state.Stage)
 	}
 
-	return *src, false, nil
+	return state.QRCode, false, nil
+}
+
+func (a *LoginAction) FetchLoginState(ctx context.Context) (LoginState, error) {
+	return a.openLoginPage(ctx, loginPageSettleDelay)
 }
 
 func (a *LoginAction) WaitForLogin(ctx context.Context) bool {
-	pp := a.page.Context(ctx)
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(loginStatePollingInterval)
 	defer ticker.Stop()
 
 	for {
@@ -120,10 +145,124 @@ func (a *LoginAction) WaitForLogin(ctx context.Context) bool {
 		case <-ctx.Done():
 			return false
 		case <-ticker.C:
-			el, err := pp.Element(".main-container .user .link-wrapper .channel")
-			if err == nil && el != nil {
+			state, err := a.CurrentState(ctx)
+			if err == nil && state.Stage == LoginStageLoggedIn {
 				return true
 			}
 		}
 	}
+}
+
+func (a *LoginAction) CurrentState(ctx context.Context) (LoginState, error) {
+	_, userErr := a.CurrentUser(ctx)
+	if userErr != nil && !errors.Is(userErr, errCurrentUserNotFound) {
+		return LoginState{}, userErr
+	}
+
+	deviceQR, err := visibleImageSource(a.page.Context(ctx), deviceVerificationSelector)
+	if err != nil {
+		return LoginState{}, errors.Wrap(err, "read device verification qrcode failed")
+	}
+	initialQR, err := visibleImageSource(a.page.Context(ctx), initialLoginQRCodeSelector)
+	if err != nil {
+		return LoginState{}, errors.Wrap(err, "read login qrcode failed")
+	}
+	loginContainerVisible, err := elementVisible(a.page.Context(ctx), loginContainerSelector)
+	if err != nil {
+		return LoginState{}, errors.Wrap(err, "read login container failed")
+	}
+
+	pageInfo, err := a.page.Context(ctx).Info()
+	if err != nil {
+		return LoginState{}, errors.Wrap(err, "read login page URL failed")
+	}
+
+	return classifyLoginState(loginPageSignals{
+		SiteMatched:           Site().MatchesURL(pageInfo.URL),
+		Authenticated:         userErr == nil,
+		DeviceVerificationQR:  deviceQR,
+		InitialLoginQRCode:    initialQR,
+		LoginContainerVisible: loginContainerVisible,
+	}), nil
+}
+
+func (a *LoginAction) openLoginPage(ctx context.Context, settleDelay time.Duration) (LoginState, error) {
+	pp := a.page.Context(ctx).Timeout(loginStatusCheckTimeout)
+	applySiteLocale(pp)
+	if err := pp.Navigate(Site().Home); err != nil {
+		return LoginState{}, errors.Wrap(err, "navigate to login page failed")
+	}
+	if err := pp.WaitLoad(); err != nil {
+		return LoginState{}, errors.Wrap(err, "wait for login page failed")
+	}
+
+	timer := time.NewTimer(settleDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return LoginState{}, ctx.Err()
+	case <-timer.C:
+	}
+
+	return a.CurrentState(ctx)
+}
+
+// classifyLoginState 判定当前登录阶段。
+// 设备验证二维码优先于 __INITIAL_STATE__ 的已认证信号：验证弹窗还在就没真正登录完成。
+func classifyLoginState(signals loginPageSignals) LoginState {
+	switch {
+	case !signals.SiteMatched:
+		return LoginState{Stage: LoginStageUnknown}
+	case signals.DeviceVerificationQR != "":
+		return LoginState{
+			Stage:  LoginStageDeviceVerification,
+			QRCode: signals.DeviceVerificationQR,
+		}
+	case signals.Authenticated:
+		return LoginState{Stage: LoginStageLoggedIn}
+	case signals.InitialLoginQRCode != "":
+		return LoginState{
+			Stage:  LoginStageQRCode,
+			QRCode: signals.InitialLoginQRCode,
+		}
+	case signals.LoginContainerVisible:
+		return LoginState{Stage: LoginStageWaitingConfirmation}
+	default:
+		return LoginState{Stage: LoginStageUnknown}
+	}
+}
+
+func visibleImageSource(page *rod.Page, selector string) (string, error) {
+	exists, element, err := page.Has(selector)
+	if err != nil {
+		return "", err
+	}
+	if !exists || element == nil {
+		return "", nil
+	}
+
+	visible, err := element.Visible()
+	if err != nil {
+		return "", err
+	}
+	if !visible {
+		return "", nil
+	}
+
+	src, err := element.Attribute("src")
+	if err != nil {
+		return "", err
+	}
+	if src == nil {
+		return "", nil
+	}
+	return *src, nil
+}
+
+func elementVisible(page *rod.Page, selector string) (bool, error) {
+	exists, element, err := page.Has(selector)
+	if err != nil || !exists || element == nil {
+		return false, err
+	}
+	return element.Visible()
 }

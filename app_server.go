@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +38,10 @@ func NewAppServer(xiaohongshuService *XiaohongshuService) *AppServer {
 
 // Start 启动服务器
 func (s *AppServer) Start(port string) error {
+	if err := validateListenAddress(port); err != nil {
+		return err
+	}
+
 	s.router = setupRoutes(s)
 
 	s.httpServer = &http.Server{
@@ -68,4 +75,18 @@ func (s *AppServer) Start(port string) error {
 	}
 
 	return nil
+}
+
+func validateListenAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid listen address: %w", err)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("read-only server can only listen on loopback, got %q", host)
 }

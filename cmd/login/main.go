@@ -6,23 +6,30 @@ import (
 	"flag"
 
 	"github.com/go-rod/rod"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/browser"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/configs"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/cookies"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/xiaohongshu"
 	"github.com/sirupsen/logrus"
-	"github.com/xpzouying/xiaohongshu-mcp/browser"
-	"github.com/xpzouying/xiaohongshu-mcp/configs"
-	"github.com/xpzouying/xiaohongshu-mcp/cookies"
-	"github.com/xpzouying/xiaohongshu-mcp/xiaohongshu"
 )
 
 func main() {
+	var site string
+	flag.StringVar(&site, "site", xiaohongshu.SiteXiaohongshu, "site: xiaohongshu | rednote")
 	flag.Parse()
 
+	if err := xiaohongshu.SetSite(site); err != nil {
+		logrus.Fatalf("invalid site configuration: %v", err)
+	}
+
 	// 登录的时候，需要界面，所以不能无头模式。
-	// 登录与后续运行共用同一个 seed：首次登录生成并写入会话文件，之后一直复用。
-	store := cookies.NewLoadCookie(cookies.GetCookiesFilePath())
+	// 登录与后续运行共用同一份站点会话文件和 seed。
+	store := cookies.NewLoadCookie(cookies.GetCookiesFilePathForSite(site))
 
 	b := browser.NewBrowser(false,
 		browser.WithFingerprintSeed(configs.ResolveFingerprintSeed(store)),
 		browser.WithProxy(configs.ProxyFromEnv()),
+		browser.WithSite(site),
 	)
 	defer b.Close()
 
@@ -77,6 +84,8 @@ func saveCookies(page *rod.Page) error {
 		return err
 	}
 
-	cookieLoader := cookies.NewLoadCookie(cookies.GetCookiesFilePath())
+	cookieLoader := cookies.NewLoadCookie(
+		cookies.GetCookiesFilePathForSite(xiaohongshu.Site().Name),
+	)
 	return cookieLoader.SaveCookies(data)
 }

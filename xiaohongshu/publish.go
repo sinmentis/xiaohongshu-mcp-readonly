@@ -13,8 +13,8 @@ import (
 	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/pkg/errors"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/humanize"
 	"github.com/sirupsen/logrus"
-	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
 
 // PublishImageContent 发布图文内容
@@ -33,18 +33,15 @@ type PublishAction struct {
 	page *rod.Page
 }
 
-const (
-	urlOfPublic = `https://creator.xiaohongshu.com/publish/publish?source=official`
-
-	// contentElemTimeout 查找正文输入框的轮询窗口
-	contentElemTimeout = 10 * time.Second
-)
+// contentElemTimeout 查找正文输入框的轮询窗口
+const contentElemTimeout = 10 * time.Second
 
 func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
 
 	pp := page.Timeout(300 * time.Second)
+	applySiteLocale(pp)
 
-	if err := pp.Navigate(urlOfPublic); err != nil {
+	if err := pp.Navigate(Site().PublishURL); err != nil {
 		return nil, errors.Wrap(err, "导航到发布页面失败")
 	}
 
