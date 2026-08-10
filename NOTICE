@@ -1,0 +1,11 @@
+Xiaohongshu MCP Readonly
+
+This distribution is a modified fork of:
+https://github.com/xpzouying/xiaohongshu-mcp
+
+The original Apache License 2.0 and copyright notice are retained in LICENSE.
+
+This fork changes the public interface to a localhost-only read-only MCP,
+adds conservative access pacing, dual Xiaohongshu/RedNote site support,
+durable QR login verification, a local login page, and additional security
+hardening.

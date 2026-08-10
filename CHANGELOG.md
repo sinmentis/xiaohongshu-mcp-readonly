@@ -1,0 +1,13 @@
+# Changelog
+
+All notable changes are documented here.
+
+## Unreleased
+
+- Establish the public read-only fork.
+- Add positive MCP and HTTP allowlists.
+- Add RedNote and Xiaohongshu site separation.
+- Add conservative access pacing and comment limits.
+- Add durable QR login verification and a localhost login page.
+- Add Linux ARM64 browser fallback.
+- Add loopback request validation and pinned browser archive hashes.

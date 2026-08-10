@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a read-only capability or project improvement
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What read-only use case is currently difficult?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful interface.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Account-safety and privacy impact
+      description: Explain request volume, data handling, and any new browser behavior.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope confirmation
+      options:
+        - label: This request does not publish, comment, reply, like, favorite, manage notifications, or delete sessions.
+          required: true

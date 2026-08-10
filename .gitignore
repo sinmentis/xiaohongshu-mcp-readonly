@@ -8,7 +8,9 @@
 *.so
 *.dylib
 
-.idea
+.idea/
+.vscode/
+.DS_Store
 
 # Test binary, built with `go test -c`
 *.test
@@ -29,22 +31,19 @@ go.work.sum
 # env file
 .env
 
-# Editor/IDE
-# .idea/
-# .vscode/
 .claude/
 
 # Build artifacts
 xiaohongshu-mcp
+xiaohongshu-mcp-readonly
+/bin/
+/dist/
 
 # Test scripts
 test_*.sh
 
-# Cookies files (contain sensitive login information)
-cookies.json
-docker/data/
-docker/images/
-docker/docker-compose.override.yml
+# Cookie files contain full login sessions.
+cookies*.json
 
-# 本地分析/调试产物，不进仓库
+# Local analysis and debugging artifacts
 debug/
