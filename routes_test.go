@@ -53,6 +53,44 @@ func TestMCPStatelessSinglePost(t *testing.T) {
 	assert.NotEmpty(t, result.Result.Tools, "应返回已注册的工具")
 }
 
+func TestMCPInitializeIncludesReadOnlyInstructions(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	request, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/mcp",
+		strings.NewReader(`{
+			"jsonrpc": "2.0",
+			"id": 1,
+			"method": "initialize",
+			"params": {
+				"protocolVersion": "2025-11-25",
+				"capabilities": {},
+				"clientInfo": {"name": "test", "version": "1.0"}
+			}
+		}`),
+	)
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+
+	var result struct {
+		Result struct {
+			Instructions string `json:"instructions"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&result))
+	assert.Equal(t, readOnlyServerInstructions, result.Result.Instructions)
+	assert.LessOrEqual(t, len(readOnlyServerInstructions), 512)
+}
+
 func TestOnlyReadOnlyToolsRegistered(t *testing.T) {
 	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
 	server := httptest.NewServer(router)

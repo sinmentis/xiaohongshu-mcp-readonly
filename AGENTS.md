@@ -15,6 +15,9 @@ interface is exactly:
 Never expose publishing, commenting, replying, liking, favoriting,
 notifications, or cookie deletion through MCP or HTTP.
 
+The MCP initialization response must keep server-wide read-only, pacing, login,
+and token-handling instructions for clients that consume MCP instructions.
+
 ## Architecture
 
 - `mcp_server.go` is the MCP registration seam. Register tools positively.

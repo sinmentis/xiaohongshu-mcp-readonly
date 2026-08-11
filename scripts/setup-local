@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+umask 077
+
+server_name="xiaohongshu-readonly"
+endpoint="http://127.0.0.1:18060/mcp"
+tools="check_login_status,get_login_qrcode,list_feeds,search_feeds,get_feed_detail,user_profile"
+site=""
+agent="none"
+dry_run=false
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/setup-local --site rednote|xiaohongshu [--agent CLIENT] [--dry-run]
+
+Build and install the local systemd user service, then optionally register it
+with an AI client.
+
+CLIENT:
+  none      Install the server only
+  copilot   Register GitHub Copilot CLI
+  claude    Register Claude Code for the current user
+  codex     Add a user-level Codex MCP configuration
+EOF
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --site)
+      [[ $# -ge 2 ]] || {
+        echo "--site requires a value" >&2
+        exit 2
+      }
+      site="$2"
+      shift 2
+      ;;
+    --agent)
+      [[ $# -ge 2 ]] || {
+        echo "--agent requires a value" >&2
+        exit 2
+      }
+      agent="$2"
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=true
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$site" in
+  rednote | xiaohongshu) ;;
+  *)
+    echo "--site must be rednote or xiaohongshu" >&2
+    exit 2
+    ;;
+esac
+
+case "$agent" in
+  none | copilot | claude | codex) ;;
+  *)
+    echo "--agent must be none, copilot, claude, or codex" >&2
+    exit 2
+    ;;
+esac
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+binary_dir="$HOME/.local/bin"
+state_dir="$HOME/.local/share/xiaohongshu-mcp-readonly"
+config_dir="$HOME/.config/xiaohongshu-mcp-readonly"
+unit_dir="$HOME/.config/systemd/user"
+binary_path="$binary_dir/xiaohongshu-mcp-readonly"
+unit_path="$unit_dir/xiaohongshu-mcp-readonly.service"
+config_path="$config_dir/env"
+
+if $dry_run; then
+  printf 'Would install site %s and register agent %s.\n' "$site" "$agent"
+  printf 'Login page: http://127.0.0.1:18060/login\n'
+  printf 'MCP endpoint: %s\n' "$endpoint"
+  exit 0
+fi
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "Required command not found: $1" >&2
+    exit 1
+  }
+}
+
+require_command go
+require_command install
+require_command systemctl
+systemctl --user show-environment >/dev/null
+
+mkdir -p "$binary_dir" "$state_dir" "$config_dir" "$unit_dir"
+chmod 0700 "$state_dir" "$config_dir"
+
+tmp_binary="$(mktemp "$binary_dir/.xiaohongshu-mcp-readonly.XXXXXX")"
+tmp_config="$(mktemp "$config_dir/.env.XXXXXX")"
+cleanup() {
+  rm -f -- "$tmp_binary" "$tmp_config"
+}
+trap cleanup EXIT
+
+version="$(git -C "$repo_root" rev-parse --short=12 HEAD 2>/dev/null || printf 'dev')"
+(
+  cd "$repo_root"
+  go build -trimpath \
+    -ldflags="-s -w -X main.version=${version}" \
+    -o "$tmp_binary" .
+)
+chmod 0755 "$tmp_binary"
+mv -f "$tmp_binary" "$binary_path"
+
+printf 'XHS_SITE=%s\n' "$site" >"$tmp_config"
+chmod 0600 "$tmp_config"
+mv -f "$tmp_config" "$config_path"
+
+install -m 0644 \
+  "$repo_root/deploy/systemd/xiaohongshu-mcp-readonly.service" \
+  "$unit_path"
+systemctl --user daemon-reload
+systemctl --user enable xiaohongshu-mcp-readonly.service
+systemctl --user restart xiaohongshu-mcp-readonly.service
+systemctl --user is-active --quiet xiaohongshu-mcp-readonly.service
+
+register_copilot() {
+  require_command copilot
+  if copilot mcp get "$server_name" >/dev/null 2>&1; then
+    echo "GitHub Copilot CLI already has $server_name configured."
+    return
+  fi
+  copilot mcp add \
+    --transport http \
+    --timeout 900000 \
+    --tools "$tools" \
+    "$server_name" \
+    "$endpoint"
+}
+
+register_claude() {
+  require_command claude
+  if claude mcp get "$server_name" >/dev/null 2>&1; then
+    echo "Claude Code already has $server_name configured."
+    return
+  fi
+  claude mcp add-json --scope user "$server_name" \
+    "{\"type\":\"http\",\"url\":\"${endpoint}\",\"timeout\":900000}"
+}
+
+register_codex() {
+  local codex_dir="$HOME/.codex"
+  local codex_config="$codex_dir/config.toml"
+  local section="[mcp_servers.${server_name}]"
+
+  mkdir -p "$codex_dir"
+  touch "$codex_config"
+  chmod 0600 "$codex_config"
+  if grep -Fqx "$section" "$codex_config" ||
+    grep -Fqx "[mcp_servers.\"${server_name}\"]" "$codex_config"; then
+    echo "Codex already has $server_name configured."
+    return
+  fi
+
+  cat >>"$codex_config" <<EOF
+
+$section
+url = "$endpoint"
+tool_timeout_sec = 900
+default_tools_approval_mode = "auto"
+EOF
+}
+
+case "$agent" in
+  copilot) register_copilot ;;
+  claude) register_claude ;;
+  codex) register_codex ;;
+esac
+
+printf 'Installed and started %s for %s.\n' "$server_name" "$site"
+printf 'Login page: http://127.0.0.1:18060/login\n'
+printf 'MCP endpoint: %s\n' "$endpoint"

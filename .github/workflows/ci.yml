@@ -50,6 +50,14 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           actionlint -color
 
+      - name: Check shell scripts
+        run: |
+          shellcheck scripts/*
+          for script in scripts/*; do
+            bash -n "$script"
+          done
+          scripts/setup-local --site rednote --agent none --dry-run
+
       - name: Cross-compile
         run: |
           for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do

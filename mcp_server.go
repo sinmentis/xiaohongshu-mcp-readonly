@@ -10,13 +10,15 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// SearchFeedsArgs 搜索内容的参数。
+const readOnlyServerInstructions = "Read-only localhost access to Xiaohongshu or RedNote. Call check_login_status before reading. If logged out, call get_login_qrcode and direct the user to the same local server's /login page. Call one read tool at a time and do not retry or poll aggressively; access is deliberately rate-limited. Reuse IDs and xsec tokens only as tool inputs, and never include tokens in user-facing output. Do not attempt or claim publishing, commenting, liking, favoriting, notifications, or session deletion."
+
+// SearchFeedsArgs defines a search request.
 type SearchFeedsArgs struct {
 	Keyword string       `json:"keyword" jsonschema:"Search keyword"`
 	Filters FilterOption `json:"filters,omitempty" jsonschema:"Optional search filters"`
 }
 
-// FilterOption 搜索筛选参数。
+// FilterOption defines optional search filters.
 type FilterOption struct {
 	SortBy      string `json:"sort_by,omitempty" jsonschema:"Sort: 综合|最新|最多点赞|最多评论|最多收藏; default 综合"`
 	NoteType    string `json:"note_type,omitempty" jsonschema:"Note type: 不限|视频|图文; default 不限"`
@@ -25,7 +27,7 @@ type FilterOption struct {
 	Location    string `json:"location,omitempty" jsonschema:"Location: 不限|同城|附近; default 不限"`
 }
 
-// FeedDetailArgs 获取笔记详情的参数。
+// FeedDetailArgs defines a note-detail request.
 type FeedDetailArgs struct {
 	FeedID           string `json:"feed_id" jsonschema:"Note ID from a feed or search result"`
 	XsecToken        string `json:"xsec_token" jsonschema:"Access token from the feed result xsecToken field"`
@@ -36,25 +38,27 @@ type FeedDetailArgs struct {
 	ScrollSpeed      string `json:"scroll_speed,omitempty" jsonschema:"Compatibility field; the server always forces slow scrolling"`
 }
 
-// UserProfileArgs 获取用户主页的参数。
+// UserProfileArgs defines a profile request.
 type UserProfileArgs struct {
 	UserID    string `json:"user_id" jsonschema:"User ID from a feed result"`
 	XsecToken string `json:"xsec_token" jsonschema:"Access token from a feed result"`
 	Tab       string `json:"tab,omitempty" jsonschema:"Profile tab: note (default), fav, or liked; the latter two may be private"`
 }
 
-// InitMCPServer 创建只读 MCP Server。
+// InitMCPServer creates the read-only MCP server.
 func InitMCPServer(appServer *AppServer) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "xiaohongshu-readonly-mcp",
 			Version: "0.1.0",
 		},
-		nil,
+		&mcp.ServerOptions{
+			Instructions: readOnlyServerInstructions,
+		},
 	)
 
 	registerReadOnlyTools(server, appServer)
-	logrus.Info("只读 MCP Server 已初始化，共开放 6 个工具")
+	logrus.Info("Read-only MCP server initialized with six tools")
 	return server
 }
 
@@ -92,7 +96,7 @@ func withPanicRecovery[T any](
 	}
 }
 
-// registerReadOnlyTools 使用正向列表注册工具，新增上游工具不会自动暴露。
+// registerReadOnlyTools keeps upstream additions out of the public interface.
 func registerReadOnlyTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
