@@ -1,4 +1,7 @@
-.PHONY: build check fmt test test-race
+.PHONY: build check fmt setup test test-race
+
+SITE ?= rednote
+AGENT ?= none
 
 build:
 	go build -trimpath -o bin/xiaohongshu-mcp-readonly .
@@ -11,6 +14,9 @@ test:
 
 test-race:
 	go test ./... -race
+
+setup:
+	./scripts/setup-local --site "$(SITE)" --agent "$(AGENT)"
 
 check: fmt
 	go vet ./...

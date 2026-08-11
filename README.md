@@ -20,6 +20,7 @@ See [NOTICE](NOTICE) and [docs/upstream.md](docs/upstream.md).
 ## Features
 
 - Six positively registered read-only MCP tools.
+- Server-wide MCP instructions for compatible AI agents.
 - Separate Xiaohongshu and RedNote URLs, cookies, and browser identity seeds.
 - QR login in Copilot CLI or at `http://127.0.0.1:18060/login`.
 - Fresh-browser verification before login is reported as successful.
@@ -32,7 +33,8 @@ See [NOTICE](NOTICE) and [docs/upstream.md](docs/upstream.md).
 
 - Go 1.25.12 or later.
 - A supported bundled browser platform, or a local Chromium-compatible browser.
-- GitHub Copilot CLI for the intended MCP integration.
+- A local Streamable HTTP MCP client such as GitHub Copilot CLI, Claude Code,
+  Codex CLI, or Cursor.
 - A dedicated Xiaohongshu or RedNote account is strongly recommended.
 
 Bundled browser builds currently cover Linux AMD64, macOS ARM64, and Windows
@@ -47,38 +49,27 @@ use a browser you manage locally.
 
 ## Quick start
 
+On Linux with a systemd user session:
+
 ```bash
 git clone https://github.com/sinmentis/xiaohongshu-mcp-readonly.git
 cd xiaohongshu-mcp-readonly
 
-go build -trimpath -o bin/xiaohongshu-mcp-readonly .
-
-mkdir -p "$HOME/.local/share/xiaohongshu-mcp-readonly"
-
-COOKIES_PATH="$HOME/.local/share/xiaohongshu-mcp-readonly/cookies.json" \
-  ./bin/xiaohongshu-mcp-readonly \
-  -site rednote \
-  -port 127.0.0.1:18060
+./scripts/setup-local --site rednote --agent copilot
 ```
 
-Use `-site rednote` for overseas RedNote accounts and `-site xiaohongshu` for
+Use `--site rednote` for overseas RedNote accounts and `--site xiaohongshu` for
 mainland Xiaohongshu accounts.
+
+Replace `copilot` with `claude`, `codex`, or `none`. The script builds,
+installs, starts, and optionally registers the server. No separate agent prompt
+is required because compatible MCP clients receive the server instructions
+during initialization.
 
 Open the local login page:
 
 ```text
 http://127.0.0.1:18060/login
-```
-
-Then register the MCP server:
-
-```bash
-copilot mcp add \
-  --transport http \
-  --timeout 900000 \
-  --tools check_login_status,get_login_qrcode,list_feeds,search_feeds,get_feed_detail,user_profile \
-  xiaohongshu-readonly \
-  http://127.0.0.1:18060/mcp
 ```
 
 Inside Copilot CLI, run `/mcp`, then ask:
@@ -117,6 +108,7 @@ will never be challenged or restricted. Avoid unattended bulk collection.
 ## Documentation
 
 - [Copilot CLI setup](docs/copilot-cli.md)
+- [Other AI agents](docs/ai-agents.md)
 - [HTTP interface](docs/api.md)
 - [Architecture](docs/architecture.md)
 - [Security model](docs/security-model.md)

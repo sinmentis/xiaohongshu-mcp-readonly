@@ -10,7 +10,9 @@ Environment=HOME=%h/.local/share/xiaohongshu-mcp-readonly
 Environment=XDG_CONFIG_HOME=%h/.local/share/xiaohongshu-mcp-readonly/config
 Environment=XDG_CACHE_HOME=%h/.cache
 Environment=COOKIES_PATH=%h/.local/share/xiaohongshu-mcp-readonly/cookies.json
-ExecStart=%h/.local/bin/xiaohongshu-mcp-readonly -headless=true -port 127.0.0.1:18060 -site rednote -min-request-interval 30s -request-jitter 15s -max-comments 50 -max-replies 10
+Environment=XHS_SITE=rednote
+EnvironmentFile=-%h/.config/xiaohongshu-mcp-readonly/env
+ExecStart=%h/.local/bin/xiaohongshu-mcp-readonly -headless=true -port 127.0.0.1:18060 -site ${XHS_SITE} -min-request-interval 30s -request-jitter 15s -max-comments 50 -max-replies 10
 Restart=on-failure
 RestartSec=15s
 NoNewPrivileges=true

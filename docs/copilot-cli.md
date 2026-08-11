@@ -1,16 +1,23 @@
 # GitHub Copilot CLI setup
 
-## Build
+## One-command setup
+
+On Linux with a systemd user session:
 
 ```bash
 git clone https://github.com/sinmentis/xiaohongshu-mcp-readonly.git
 cd xiaohongshu-mcp-readonly
-go build -trimpath -o "$HOME/.local/bin/xiaohongshu-mcp-readonly" .
+./scripts/setup-local --site rednote --agent copilot
 ```
 
-Create the local state directory:
+Use `--site xiaohongshu` for a mainland Xiaohongshu account.
+
+## Manual setup
+
+Build the binary:
 
 ```bash
+go build -trimpath -o "$HOME/.local/bin/xiaohongshu-mcp-readonly" .
 mkdir -p "$HOME/.local/share/xiaohongshu-mcp-readonly"
 ```
 
@@ -97,8 +104,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now xiaohongshu-mcp-readonly.service
 ```
 
-The provided unit runs in RedNote mode. Edit its `-site` value before
-installation if the account belongs to Xiaohongshu.
+The provided unit defaults to RedNote. Set `XHS_SITE=xiaohongshu` in
+`$HOME/.config/xiaohongshu-mcp-readonly/env` for a mainland account.
 
 View logs:
 

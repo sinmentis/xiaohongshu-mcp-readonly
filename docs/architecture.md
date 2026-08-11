@@ -4,6 +4,8 @@
 
 The product interface is deliberately smaller than the upstream implementation:
 six read-only MCP tools, matching local HTTP routes, and a localhost login page.
+MCP initialization also supplies server-wide read-only and pacing instructions
+to compatible clients.
 
 The composition roots are:
 
