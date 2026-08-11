@@ -1,10 +1,58 @@
 package xiaohongshu
 
 import (
+	"errors"
 	"testing"
 
+	"github.com/go-rod/rod"
 	"github.com/stretchr/testify/require"
 )
+
+type fakeSearchNavigator struct {
+	calls       []string
+	waitJS      string
+	navigateErr error
+	loadErr     error
+	stateErr    error
+}
+
+func (f *fakeSearchNavigator) Navigate(string) error {
+	f.calls = append(f.calls, "navigate")
+	return f.navigateErr
+}
+
+func (f *fakeSearchNavigator) WaitLoad() error {
+	f.calls = append(f.calls, "load")
+	return f.loadErr
+}
+
+func (f *fakeSearchNavigator) Wait(options *rod.EvalOptions) error {
+	f.calls = append(f.calls, "search-state")
+	f.waitJS = options.JS
+	return f.stateErr
+}
+
+func TestNavigateToSearchWaitsForSearchState(t *testing.T) {
+	t.Run("waits for load and search state without global page stability", func(t *testing.T) {
+		page := &fakeSearchNavigator{}
+
+		err := navigateToSearch(page, "https://www.rednote.com/search_result")
+
+		require.NoError(t, err)
+		require.Equal(t, []string{"navigate", "load", "search-state"}, page.calls)
+		require.Contains(t, page.waitJS, "search.state")
+		require.Contains(t, page.waitJS, `state === "success"`)
+	})
+
+	t.Run("stops after navigation failure", func(t *testing.T) {
+		page := &fakeSearchNavigator{navigateErr: errors.New("navigation failed")}
+
+		err := navigateToSearch(page, "https://www.rednote.com/search_result")
+
+		require.ErrorContains(t, err, "navigate to search page")
+		require.Equal(t, []string{"navigate"}, page.calls)
+	})
+}
 
 func TestCollectFilters(t *testing.T) {
 	t.Run("只展开非空字段", func(t *testing.T) {
