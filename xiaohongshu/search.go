@@ -87,11 +87,44 @@ type SearchAction struct {
 	page *rod.Page
 }
 
+type searchNavigator interface {
+	Navigate(string) error
+	WaitLoad() error
+	Wait(*rod.EvalOptions) error
+}
+
+const searchStateReadyJS = `() => {
+	const search = window.__INITIAL_STATE__?.search;
+	if (!search?.state) {
+		return false;
+	}
+	const rawState = search.state;
+	const state = typeof rawState === "string"
+		? rawState
+		: rawState.value !== undefined
+			? rawState.value
+			: rawState._value;
+	return state === "success";
+}`
+
 func NewSearchAction(page *rod.Page) *SearchAction {
 	pp := page.Timeout(60 * time.Second)
 	applySiteLocale(pp)
 
 	return &SearchAction{page: pp}
+}
+
+func navigateToSearch(page searchNavigator, searchURL string) error {
+	if err := page.Navigate(searchURL); err != nil {
+		return fmt.Errorf("navigate to search page: %w", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		return fmt.Errorf("wait for search page load: %w", err)
+	}
+	if err := page.Wait(rod.Eval(searchStateReadyJS)); err != nil {
+		return fmt.Errorf("wait for search results: %w", err)
+	}
+	return nil
 }
 
 func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...FilterOption) ([]Feed, error) {
@@ -101,14 +134,13 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 		return nil, err
 	}
 
-	// 注意 .Context(ctx) 会替换掉 NewSearchAction 里设的 60s deadline，必须在其后重新 Timeout，
-	// 否则搜索页不 stable 时 MustWaitStable/MustWait 会永久挂起（无 deadline 可依赖）。
+	// Context replaces the constructor deadline, so reapply the bounded timeout.
 	page := s.page.Context(ctx).Timeout(60 * time.Second)
 
 	searchURL := makeSearchURL(keyword)
-	page.MustNavigate(searchURL)
-	page.MustWaitStable()
-	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
+	if err := navigateToSearch(page, searchURL); err != nil {
+		return nil, err
+	}
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	if len(pending) > 0 {
