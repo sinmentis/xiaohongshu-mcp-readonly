@@ -117,21 +117,6 @@ func (a *LoginAction) Login(ctx context.Context) error {
 	return nil
 }
 
-func (a *LoginAction) FetchQrcodeImage(ctx context.Context) (string, bool, error) {
-	state, err := a.FetchLoginState(ctx)
-	if err != nil {
-		return "", false, err
-	}
-	if state.Stage == LoginStageLoggedIn {
-		return "", true, nil
-	}
-	if state.QRCode == "" {
-		return "", false, errors.Errorf("qrcode is not available in login stage %s", state.Stage)
-	}
-
-	return state.QRCode, false, nil
-}
-
 func (a *LoginAction) FetchLoginState(ctx context.Context) (LoginState, error) {
 	return a.openLoginPage(ctx, loginPageSettleDelay)
 }

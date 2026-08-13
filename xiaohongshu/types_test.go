@@ -6,10 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestOnlyNotes 固定「搜索与列表只返回笔记」这条约束。
-//
-// 取值取自真机走查：搜「露营」+ 图文，23 条里混着 3 条 live_v2 和 2 条 hot_query；
-// 换成视频筛选，20 条笔记的 modelType 同样是 note，只是 noteCard.type 变成 video。
+// Real search results mix note, live_v2, and hot_query cards.
 func TestOnlyNotes(t *testing.T) {
 	t.Run("滤掉直播卡片与搜索热词", func(t *testing.T) {
 		feeds := []Feed{

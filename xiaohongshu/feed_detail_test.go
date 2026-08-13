@@ -6,7 +6,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestIsExpandRepliesButton 两种文案都要认：带数字的，以及点开一次后不带数字的。
 func TestIsExpandRepliesButton(t *testing.T) {
 	accepted := []string{
 		"展开 49 条回复",
@@ -32,11 +31,7 @@ func TestIsExpandRepliesButton(t *testing.T) {
 	}
 }
 
-// TestCommentLoadConfig_normalize 零值一律按「未设置」处理，回落到默认上限。
-//
-// 回归的是这个坑：HTTP 详情接口要的是嵌套的 comment_config，调用方传扁平字段
-// 会被 ShouldBindJSON 静默丢掉 → MaxCommentItems=0 → 以前 0 表示无上限 →
-// 一次请求滚满 defaultMaxAttempts(500) 轮。
+// Zero values once triggered 500 scroll attempts when HTTP omitted nested config.
 func TestCommentLoadConfig_normalize(t *testing.T) {
 	t.Run("空配置回落到默认", func(t *testing.T) {
 		got := CommentLoadConfig{}.normalize()
@@ -71,7 +66,6 @@ func TestCommentLoadConfig_normalize(t *testing.T) {
 	})
 }
 
-// TestCalculateMaxAttempts 规范化之后不该再落到 500 轮那条兜底上。
 func TestCalculateMaxAttempts(t *testing.T) {
 	cl := &commentLoader{config: CommentLoadConfig{}.normalize()}
 	assert.Equal(t, defaultMaxCommentItems*3, cl.calculateMaxAttempts())

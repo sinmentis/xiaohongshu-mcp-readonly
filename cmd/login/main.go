@@ -49,7 +49,6 @@ func main() {
 		return
 	}
 
-	// 开始登录流程
 	logrus.Info("开始登录流程...")
 	if err = action.Login(context.Background()); err != nil {
 		logrus.Fatalf("登录失败: %v", err)
@@ -59,7 +58,6 @@ func main() {
 		}
 	}
 
-	// 再次检查登录状态确认成功
 	status, err = action.CheckLoginStatus(context.Background())
 	if err != nil {
 		logrus.Fatalf("failed to check login status after login: %v", err)
@@ -70,7 +68,6 @@ func main() {
 	} else {
 		logrus.Error("登录流程完成但仍未登录")
 	}
-
 }
 
 func saveCookies(page *rod.Page) error {

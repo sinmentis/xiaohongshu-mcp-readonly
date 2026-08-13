@@ -10,8 +10,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-// sessionFile 是 v2 的文件结构。v1 是一个裸 cookie 数组，没有外层对象。
-// cookies 用 RawMessage 原样透传，不解析不重组，避免往返时字段走样。
+// RawMessage preserves cookie fields while wrapping legacy arrays in the v2 envelope.
 type sessionFile struct {
 	Version int             `json:"version"`
 	Seed    int             `json:"seed,omitempty"`
@@ -19,16 +18,12 @@ type sessionFile struct {
 	Cookies json.RawMessage `json:"cookies"`
 }
 
-// localCookiesPath 当前目录下的默认文件名。
 const localCookiesPath = "cookies.json"
 
 type Cookier interface {
 	LoadCookies() ([]byte, error)
 	SaveCookies(data []byte) error
-	DeleteCookies() error
-	// LoadSeed 读取会话绑定的 seed；老格式、文件损坏或未设时返回 0。
 	LoadSeed() int
-	// SaveSeed 写入 seed，保留文件中已有的 cookies。
 	SaveSeed(seed int) error
 }
 
@@ -46,8 +41,7 @@ func NewLoadCookie(path string) Cookier {
 	}
 }
 
-// LoadCookies 从文件中加载 cookies 数组的原始字节。
-// v2 从外层对象里取出 cookies 字段；v1 文件本身就是数组，原样返回。
+// LoadCookies accepts both legacy arrays and the v2 session envelope.
 func (c *localCookie) LoadCookies() ([]byte, error) {
 
 	data, err := os.ReadFile(c.path)
@@ -63,7 +57,6 @@ func (c *localCookie) LoadCookies() ([]byte, error) {
 	return data, nil
 }
 
-// LoadSeed 读取会话绑定的 seed。老格式（裸数组）没有这个值，返回 0。
 func (c *localCookie) LoadSeed() int {
 	data, err := os.ReadFile(c.path)
 	if err != nil {
@@ -77,21 +70,18 @@ func (c *localCookie) LoadSeed() int {
 	return f.Seed
 }
 
-// SaveCookies 保存 cookies 到文件中，保留文件里已有的 seed。
 func (c *localCookie) SaveCookies(data []byte) error {
 	return c.write(data, c.LoadSeed())
 }
 
-// SaveSeed 写入 seed，保留文件里已有的 cookies。
 func (c *localCookie) SaveSeed(seed int) error {
 	cks, err := c.LoadCookies()
 	if err != nil {
-		cks = nil // 文件还不存在：先把 seed 落下来，cookies 之后再补
+		cks = nil
 	}
 	return c.write(cks, seed)
 }
 
-// write 以 v2 格式落盘。cookies 用 RawMessage 原样嵌入，不经过结构体往返。
 func (c *localCookie) write(cks []byte, seed int) error {
 	if len(cks) == 0 {
 		cks = []byte("[]")
@@ -119,16 +109,6 @@ func (c *localCookie) write(cks []byte, seed int) error {
 	return os.Chmod(c.path, 0600)
 }
 
-// DeleteCookies 删除 cookies 文件。
-func (c *localCookie) DeleteCookies() error {
-	if _, err := os.Stat(c.path); os.IsNotExist(err) {
-		// 文件不存在，返回 nil（认为已经删除）
-		return nil
-	}
-	return os.Remove(c.path)
-}
-
-// GetCookiesFilePath returns the configured cookie file or the local default.
 func GetCookiesFilePath() string {
 	if path := os.Getenv("COOKIES_PATH"); path != "" {
 		return path
@@ -136,7 +116,6 @@ func GetCookiesFilePath() string {
 	return localCookiesPath
 }
 
-// GetCookiesFilePathForSite 隔离国内站与海外站的会话文件。
 func GetCookiesFilePathForSite(site string) string {
 	base := GetCookiesFilePath()
 	if site == "" || site == "xiaohongshu" {

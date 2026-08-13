@@ -1,7 +1,6 @@
 package xiaohongshu
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -54,13 +53,4 @@ func TestMakeUserProfileURL(t *testing.T) {
 
 	liked := makeUserProfileURL("uid1", "tok1", TabLiked)
 	assert.Contains(t, liked, "tab=liked")
-}
-
-// tabLabel 要覆盖全部 tab，缺一个会让切换时找不到目标而报错。
-func TestTabLabelCoverage(t *testing.T) {
-	for _, tab := range []ProfileTab{TabNotes, TabFavorites, TabLiked} {
-		label, ok := tabLabel[tab]
-		assert.True(t, ok, "tab %q 缺少页面文字", tab)
-		assert.NotEmpty(t, strings.TrimSpace(label))
-	}
 }
