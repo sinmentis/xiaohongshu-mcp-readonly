@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -20,16 +22,25 @@ import (
 
 // XiaohongshuService 小红书业务服务
 type XiaohongshuService struct {
-	logins     loginSessions
-	accessGate *accessGate
-	policy     AccessPolicy
+	logins           loginSessions
+	accessGate       *accessGate
+	readBrowser      *browserRuntime
+	readBrowserStale atomic.Bool
+	policy           AccessPolicy
 }
 
 const (
-	loginStateCacheTTL              = 90 * time.Second
-	loginSessionTimeout             = 10 * time.Minute
-	loginStabilityWindow            = 3 * time.Second
-	persistedLoginVerificationLimit = 60 * time.Second
+	loginStateCacheTTL               = 90 * time.Second
+	loginSessionTimeout              = 10 * time.Minute
+	loginStabilityWindow             = 3 * time.Second
+	persistedLoginVerificationLimit  = 90 * time.Second
+	checkLoginStatusOperationLimit   = 90 * time.Second
+	getLoginQrcodeOperationLimit     = 90 * time.Second
+	listFeedsOperationLimit          = 3 * time.Minute
+	searchFeedsOperationLimit        = 2 * time.Minute
+	feedDetailOperationLimit         = 2 * time.Minute
+	feedDetailCommentsOperationLimit = 10 * time.Minute
+	userProfileOperationLimit        = 2 * time.Minute
 )
 
 // NewXiaohongshuService 创建小红书服务实例
@@ -37,12 +48,23 @@ func NewXiaohongshuService(policies ...AccessPolicy) *XiaohongshuService {
 	policy := DefaultAccessPolicy()
 	if len(policies) > 0 {
 		policy = policies[0]
+		if policy.MaxQueueWait == 0 {
+			policy.MaxQueueWait = defaultMaxQueueWait
+		}
 	}
 
-	return &XiaohongshuService{
-		accessGate: newAccessGate(policy.MinInterval, policy.MaxJitter),
-		policy:     policy,
+	service := &XiaohongshuService{
+		accessGate: newAccessGate(
+			policy.MinInterval,
+			policy.MaxJitter,
+			policy.MaxQueueWait,
+		),
+		policy: policy,
 	}
+	service.readBrowser = newBrowserRuntime(func() browserProcess {
+		return newBrowser()
+	})
+	return service
 }
 
 // PublishRequest 发布请求
@@ -119,7 +141,11 @@ type UserProfileResponse struct {
 func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
 	cookiePath := cookies.GetCookiesFilePathForSite(xiaohongshu.Site().Name)
 	cookieLoader := cookies.NewLoadCookie(cookiePath)
-	return cookieLoader.DeleteCookies()
+	if err := cookieLoader.DeleteCookies(); err != nil {
+		return err
+	}
+	s.readBrowserStale.Store(true)
+	return nil
 }
 
 // CheckLoginStatus 检查登录状态
@@ -144,40 +170,46 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 		}, nil
 	}
 
-	return withReadAccess(s, ctx, "检查登录状态", func() (*LoginStatusResponse, error) {
-		b := newBrowser()
-		defer b.Close()
+	return withReadAccess(
+		s,
+		ctx,
+		"check_login_status",
+		checkLoginStatusOperationLimit,
+		func(operationCtx context.Context) (*LoginStatusResponse, error) {
+			return withServiceReadPage(
+				s,
+				operationCtx,
+				func(page *rod.Page) (*LoginStatusResponse, error) {
+					loginAction := xiaohongshu.NewLogin(page)
 
-		page := b.NewPage()
-		defer page.Close()
+					state, err := loginAction.CheckLoginState(operationCtx)
+					if err != nil {
+						return nil, err
+					}
 
-		loginAction := xiaohongshu.NewLogin(page)
+					response := &LoginStatusResponse{
+						IsLoggedIn: state.Stage == xiaohongshu.LoginStageLoggedIn,
+						Stage:      state.Stage,
+					}
+					if response.IsLoggedIn {
+						s.logins.remember(state)
+					}
 
-		state, err := loginAction.CheckLoginState(ctx)
-		if err != nil {
-			return nil, err
-		}
+					if response.IsLoggedIn {
+						if user, err := loginAction.CurrentUser(operationCtx); err != nil {
+							logrus.WithField("error_type", fmt.Sprintf("%T", err)).
+								Warn("Failed to get current user info")
+						} else {
+							response.Username = user.Nickname
+							response.UserID = user.UserID
+						}
+					}
 
-		response := &LoginStatusResponse{
-			IsLoggedIn: state.Stage == xiaohongshu.LoginStageLoggedIn,
-			Stage:      state.Stage,
-		}
-		if response.IsLoggedIn {
-			s.logins.remember(state)
-		}
-
-		// 已登录时从当前页读取真实账号信息；读不到只记 warn，不影响状态返回。
-		if response.IsLoggedIn {
-			if user, err := loginAction.CurrentUser(ctx); err != nil {
-				logrus.Warnf("failed to get current user info: %v", err)
-			} else {
-				response.Username = user.Nickname
-				response.UserID = user.UserID
-			}
-		}
-
-		return response, nil
-	})
+					return response, nil
+				},
+			)
+		},
+	)
 }
 
 // GetLoginQrcode 获取登录的扫码二维码
@@ -188,53 +220,117 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 		return response, nil
 	}
 
-	return withReadAccess(s, ctx, "获取登录二维码", func() (*LoginQrcodeResponse, error) {
-		if response, found, err := s.currentLoginQrcode(ctx); err != nil {
-			return response, err
-		} else if found {
-			return response, nil
+	return withReadAccess(
+		s,
+		ctx,
+		"get_login_qrcode",
+		getLoginQrcodeOperationLimit,
+		func(operationCtx context.Context) (*LoginQrcodeResponse, error) {
+			if response, found, err := s.currentLoginQrcode(operationCtx); err != nil {
+				return response, err
+			} else if found {
+				return response, nil
+			}
+
+			process, page, err := openEphemeralBrowserPage(
+				operationCtx,
+				func() browserProcess { return newBrowser() },
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			var closeOnce sync.Once
+			closeBrowser := func() {
+				closeOnce.Do(func() {
+					closeEphemeralBrowserPage(process, page)
+				})
+			}
+
+			loginAction := xiaohongshu.NewLogin(page)
+
+			state, err := loginAction.FetchLoginState(operationCtx)
+			if err != nil {
+				closeBrowser()
+				return nil, err
+			}
+			if state.Stage == xiaohongshu.LoginStageLoggedIn {
+				closeBrowser()
+				s.logins.remember(state)
+				return loginQrcodeResponse(state, 0, false), nil
+			}
+			if state.QRCode == "" {
+				closeBrowser()
+				return nil, fmt.Errorf("登录页面没有可用二维码，当前阶段: %s", state.Stage)
+			}
+
+			timeout := loginSessionTimeout
+			expiresAt := time.Now().Add(timeout)
+			ctxTimeout, cancel := context.WithDeadline(context.Background(), expiresAt)
+			session := newLoginSession(
+				expiresAt,
+				cancel,
+				loginAction.CurrentState,
+				func() error { return saveCookies(page) },
+				closeBrowser,
+			)
+			seq := s.logins.start(session)
+			s.waitScanInBackground(ctxTimeout, session, seq, timeout)
+
+			return loginQrcodeResponse(state, timeout, true), nil
+		},
+	)
+}
+
+func (s *XiaohongshuService) Close(ctx context.Context) error {
+	loginDone := make(chan struct{})
+	go func() {
+		s.logins.stopCurrent()
+		close(loginDone)
+	}()
+
+	browserDone := make(chan error, 1)
+	go func() {
+		browserDone <- s.readBrowser.Close(ctx)
+	}()
+
+	for loginDone != nil || browserDone != nil {
+		select {
+		case <-loginDone:
+			loginDone = nil
+		case err := <-browserDone:
+			browserDone = nil
+			if err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
 		}
+	}
+	return nil
+}
 
-		b := newBrowser()
-		page := b.NewPage()
+func (s *XiaohongshuService) refreshReadBrowser(ctx context.Context) error {
+	if !s.readBrowserStale.Swap(false) {
+		return nil
+	}
+	if err := s.readBrowser.ResetAndWait(ctx, "login cookies changed"); err != nil {
+		s.readBrowserStale.Store(true)
+		return err
+	}
+	return nil
+}
 
-		closeBrowser := func() {
-			_ = page.Close()
-			b.Close()
-		}
-
-		loginAction := xiaohongshu.NewLogin(page)
-
-		state, err := loginAction.FetchLoginState(ctx)
-		if err != nil {
-			closeBrowser()
-			return nil, err
-		}
-		if state.Stage == xiaohongshu.LoginStageLoggedIn {
-			closeBrowser()
-			s.logins.remember(state)
-			return loginQrcodeResponse(state, 0, false), nil
-		}
-		if state.QRCode == "" {
-			closeBrowser()
-			return nil, fmt.Errorf("登录页面没有可用二维码，当前阶段: %s", state.Stage)
-		}
-
-		timeout := loginSessionTimeout
-		expiresAt := time.Now().Add(timeout)
-		ctxTimeout, cancel := context.WithDeadline(context.Background(), expiresAt)
-		session := newLoginSession(
-			expiresAt,
-			cancel,
-			loginAction.CurrentState,
-			func() error { return saveCookies(page) },
-			closeBrowser,
-		)
-		seq := s.logins.start(session)
-		s.waitScanInBackground(ctxTimeout, session, seq, timeout)
-
-		return loginQrcodeResponse(state, timeout, true), nil
-	})
+func withServiceReadPage[T any](
+	service *XiaohongshuService,
+	ctx context.Context,
+	fn func(*rod.Page) (T, error),
+) (T, error) {
+	var zero T
+	if err := service.refreshReadBrowser(ctx); err != nil {
+		return zero, err
+	}
+	return withRuntimePage(service.readBrowser, ctx, fn)
 }
 
 func (s *XiaohongshuService) LoginSessionState(
@@ -366,11 +462,17 @@ func (s *XiaohongshuService) waitScanInBackground(
 					logrus.Errorf("候选登录成功但保存 cookies 失败，会话 #%d: %v", seq, err)
 					return
 				}
+				s.readBrowserStale.Store(true)
 				s.logins.remember(xiaohongshu.LoginState{Stage: xiaohongshu.LoginStageVerifying})
 				s.logins.finish(seq)
 				completed = true
 
 				if err := s.verifyRestoredLogin(); err != nil {
+					if isLoginVerificationInfrastructureError(err) {
+						logrus.WithField("error_type", fmt.Sprintf("%T", err)).
+							Errorf("登录会话 #%d 的站点会话复验暂时无法完成", seq)
+						return
+					}
 					s.logins.remember(xiaohongshu.LoginState{
 						Stage: xiaohongshu.LoginStagePersistenceFailed,
 					})
@@ -387,35 +489,51 @@ func (s *XiaohongshuService) waitScanInBackground(
 }
 
 func (s *XiaohongshuService) verifyRestoredLogin() error {
-	_, err := withReadAccess(
+	_, err := withReadAccessQueue(
 		s,
 		context.Background(),
-		"verify saved login",
-		func() (struct{}, error) {
-			return struct{}{}, verifyRestoredLogin()
+		"verify_saved_login",
+		loginSessionTimeout,
+		persistedLoginVerificationLimit,
+		func(operationCtx context.Context) (struct{}, error) {
+			if err := s.refreshReadBrowser(operationCtx); err != nil {
+				return struct{}{}, err
+			}
+			return struct{}{}, verifyRestoredLogin(operationCtx)
 		},
 	)
 	return err
 }
 
-func verifyRestoredLogin() (err error) {
+func isLoginVerificationInfrastructureError(err error) bool {
+	var queueTimeout *operationQueueTimeoutError
+	var gateUnavailable *accessGateUnavailableError
+	var browserUnavailable *browserRuntimeUnavailableError
+	var browserPanic *browserStagePanicError
+	var operationTimeout *operationTimeoutError
+	return errors.As(err, &queueTimeout) ||
+		errors.As(err, &gateUnavailable) ||
+		errors.As(err, &browserUnavailable) ||
+		errors.As(err, &browserPanic) ||
+		errors.As(err, &operationTimeout) ||
+		errors.Is(err, context.Canceled)
+}
+
+func verifyRestoredLogin(ctx context.Context) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("重开站点浏览器失败: %v", recovered)
+			err = fmt.Errorf("fresh-browser login verification failed internally")
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(
-		context.Background(),
-		persistedLoginVerificationLimit,
+	process, page, err := openEphemeralBrowserPage(
+		ctx,
+		func() browserProcess { return newBrowser() },
 	)
-	defer cancel()
-
-	b := newBrowser()
-	defer b.Close()
-
-	page := b.NewPage()
-	defer page.Close()
+	if err != nil {
+		return err
+	}
+	defer closeEphemeralBrowserPage(process, page)
 
 	state, err := xiaohongshu.NewLogin(page).CheckLoginState(ctx)
 	if err != nil {
@@ -608,52 +726,59 @@ func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongs
 
 // ListFeeds 获取Feeds列表
 func (s *XiaohongshuService) ListFeeds(ctx context.Context) (*FeedsListResponse, error) {
-	return withReadAccess(s, ctx, "读取首页列表", func() (*FeedsListResponse, error) {
-		b := newBrowser()
-		defer b.Close()
+	return withReadAccess(
+		s,
+		ctx,
+		"list_feeds",
+		listFeedsOperationLimit,
+		func(operationCtx context.Context) (*FeedsListResponse, error) {
+			return withServiceReadPage(
+				s,
+				operationCtx,
+				func(page *rod.Page) (*FeedsListResponse, error) {
+					action := xiaohongshu.NewFeedsListAction(page)
 
-		page := b.NewPage()
-		defer page.Close()
+					feeds, err := action.GetFeedsList(operationCtx)
+					if err != nil {
+						return nil, err
+					}
 
-		action := xiaohongshu.NewFeedsListAction(page)
-
-		feeds, err := action.GetFeedsList(ctx)
-		if err != nil {
-			logrus.Errorf("获取 Feeds 列表失败: %v", err)
-			return nil, err
-		}
-
-		response := &FeedsListResponse{
-			Feeds: feeds,
-			Count: len(feeds),
-		}
-
-		return response, nil
-	})
+					return &FeedsListResponse{
+						Feeds: feeds,
+						Count: len(feeds),
+					}, nil
+				},
+			)
+		},
+	)
 }
 
 func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, filters ...xiaohongshu.FilterOption) (*FeedsListResponse, error) {
-	return withReadAccess(s, ctx, "搜索笔记", func() (*FeedsListResponse, error) {
-		b := newBrowser()
-		defer b.Close()
+	return withReadAccess(
+		s,
+		ctx,
+		"search_feeds",
+		searchFeedsOperationLimit,
+		func(operationCtx context.Context) (*FeedsListResponse, error) {
+			return withServiceReadPage(
+				s,
+				operationCtx,
+				func(page *rod.Page) (*FeedsListResponse, error) {
+					action := xiaohongshu.NewSearchAction(page)
 
-		page := b.NewPage()
-		defer page.Close()
+					feeds, err := action.Search(operationCtx, keyword, filters...)
+					if err != nil {
+						return nil, err
+					}
 
-		action := xiaohongshu.NewSearchAction(page)
-
-		feeds, err := action.Search(ctx, keyword, filters...)
-		if err != nil {
-			return nil, err
-		}
-
-		response := &FeedsListResponse{
-			Feeds: feeds,
-			Count: len(feeds),
-		}
-
-		return response, nil
-	})
+					return &FeedsListResponse{
+						Feeds: feeds,
+						Count: len(feeds),
+					}, nil
+				},
+			)
+		},
+	)
 }
 
 // GetFeedDetail 获取Feed详情
@@ -667,27 +792,42 @@ func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID
 		config = s.enforceCommentPolicy(config)
 	}
 
-	return withReadAccess(s, ctx, "读取笔记详情", func() (*FeedDetailResponse, error) {
-		b := newBrowser()
-		defer b.Close()
+	timeout := feedDetailOperationLimit
+	if loadAllComments {
+		timeout = feedDetailCommentsOperationLimit
+	}
 
-		page := b.NewPage()
-		defer page.Close()
+	return withReadAccess(
+		s,
+		ctx,
+		"get_feed_detail",
+		timeout,
+		func(operationCtx context.Context) (*FeedDetailResponse, error) {
+			return withServiceReadPage(
+				s,
+				operationCtx,
+				func(page *rod.Page) (*FeedDetailResponse, error) {
+					action := xiaohongshu.NewFeedDetailAction(page)
 
-		action := xiaohongshu.NewFeedDetailAction(page)
+					result, err := action.GetFeedDetailWithConfig(
+						operationCtx,
+						feedID,
+						xsecToken,
+						loadAllComments,
+						config,
+					)
+					if err != nil {
+						return nil, err
+					}
 
-		result, err := action.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAllComments, config)
-		if err != nil {
-			return nil, err
-		}
-
-		response := &FeedDetailResponse{
-			FeedID: feedID,
-			Data:   result,
-		}
-
-		return response, nil
-	})
+					return &FeedDetailResponse{
+						FeedID: feedID,
+						Data:   result,
+					}, nil
+				},
+			)
+		},
+	)
 }
 
 // UserProfile 获取用户信息
@@ -697,27 +837,36 @@ func (s *XiaohongshuService) UserProfile(ctx context.Context, userID, xsecToken,
 		return nil, err
 	}
 
-	return withReadAccess(s, ctx, "读取用户主页", func() (*UserProfileResponse, error) {
-		b := newBrowser()
-		defer b.Close()
+	return withReadAccess(
+		s,
+		ctx,
+		"user_profile",
+		userProfileOperationLimit,
+		func(operationCtx context.Context) (*UserProfileResponse, error) {
+			return withServiceReadPage(
+				s,
+				operationCtx,
+				func(page *rod.Page) (*UserProfileResponse, error) {
+					action := xiaohongshu.NewUserProfileAction(page)
 
-		page := b.NewPage()
-		defer page.Close()
-
-		action := xiaohongshu.NewUserProfileAction(page)
-
-		result, err := action.UserProfile(ctx, userID, xsecToken, parsed)
-		if err != nil {
-			return nil, err
-		}
-		response := &UserProfileResponse{
-			UserBasicInfo: result.UserBasicInfo,
-			Interactions:  result.Interactions,
-			Feeds:         result.Feeds,
-		}
-
-		return response, nil
-	})
+					result, err := action.UserProfile(
+						operationCtx,
+						userID,
+						xsecToken,
+						parsed,
+					)
+					if err != nil {
+						return nil, err
+					}
+					return &UserProfileResponse{
+						UserBasicInfo: result.UserBasicInfo,
+						Interactions:  result.Interactions,
+						Feeds:         result.Feeds,
+					}, nil
+				},
+			)
+		},
+	)
 }
 
 func (s *XiaohongshuService) enforceCommentPolicy(config xiaohongshu.CommentLoadConfig) xiaohongshu.CommentLoadConfig {

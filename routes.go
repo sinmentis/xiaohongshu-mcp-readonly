@@ -12,11 +12,11 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 
 	router := gin.New()
-	router.Use(localRequestMiddleware())
 	router.Use(requestLoggingMiddleware())
 	router.Use(errorHandlingMiddleware())
+	router.Use(localRequestMiddleware())
 
-	router.GET("/health", healthHandler)
+	router.GET("/health", appServer.healthHandler)
 	registerLoginPageRoutes(router)
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(
@@ -24,10 +24,10 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 			return appServer.mcpServer
 		},
 		&mcp.StreamableHTTPOptions{
-			JSONResponse: true,
 			// Stateless mode lets clients call tools without retaining an MCP
 			// session. Server-initiated sampling, elicitation, and roots are
-			// intentionally unavailable.
+			// intentionally unavailable. SSE responses keep progress
+			// notifications on the same request stream.
 			Stateless: true,
 		},
 	)

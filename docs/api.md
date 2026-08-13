@@ -33,11 +33,14 @@ Error:
 }
 ```
 
+Every response includes an `X-Request-ID` header that also appears in server
+logs.
+
 ## Endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Process health and version. |
+| `GET` | `/health` | Process, access-gate, and browser-runtime health. |
 | `POST` | `/api/v1/login/status` | Check the restored site session. |
 | `GET` | `/api/v1/login/session` | Inspect the active login session. |
 | `POST` | `/api/v1/login/session` | Start or reuse a login session. |
@@ -48,6 +51,49 @@ Error:
 | `POST` | `/mcp` | Stateless MCP endpoint. |
 
 No mutation endpoint is registered.
+
+MCP responses use Server-Sent Events (SSE) so progress notifications can share
+the request stream. MCP clients should send:
+
+```http
+Accept: application/json, text/event-stream
+```
+
+## Health
+
+`GET /health` returns `200` for `healthy` and normally busy states. It returns
+`503` while a canceled operation or browser runtime is still stuck:
+
+```json
+{
+  "success": true,
+  "data": {
+    "status": "busy",
+    "service": "xiaohongshu-mcp-readonly",
+    "access": {
+      "state": "busy",
+      "operation_id": 12,
+      "operation": "get_feed_detail",
+      "phase": "running",
+      "elapsed": "42s",
+      "remaining": "9m18s",
+      "queued": 0
+    },
+    "browser": {
+      "state": "ready",
+      "launches": 1
+    }
+  },
+  "message": "Service health"
+}
+```
+
+Browser-backed HTTP errors use:
+
+- `503 SERVICE_BUSY` when an operation cannot start within the queue limit;
+- `503 SERVICE_DEGRADED` while timed-out work is still stopping;
+- `503 BROWSER_UNAVAILABLE` while the browser runtime is unavailable;
+- `504 OPERATION_TIMEOUT` when a tool reaches its server deadline.
 
 ## Search
 

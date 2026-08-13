@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"fmt"
 	"runtime/debug"
+	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
 )
 
-const readOnlyServerInstructions = "Read-only localhost access to Xiaohongshu or RedNote. Call check_login_status before reading. If logged out, call get_login_qrcode and direct the user to the same local server's /login page. Call one read tool at a time and do not retry or poll aggressively; access is deliberately rate-limited. Reuse IDs and xsec tokens only as tool inputs, and never include tokens in user-facing output. Do not attempt or claim publishing, commenting, liking, favoriting, notifications, or session deletion."
+const readOnlyServerInstructions = "Read-only localhost Xiaohongshu or RedNote access. Call check_login_status first. If logged out, call get_login_qrcode and direct the user to this server's /login page. Call one tool at a time; access is rate-limited. Shortlist feeds before get_feed_detail. Long calls report progress when supported and have server deadlines. On busy or timeout, inspect /health before retrying. Use IDs and xsec tokens only as tool inputs, never in user-facing output. Never claim writes or session deletion."
 
 // SearchFeedsArgs defines a search request.
 type SearchFeedsArgs struct {
@@ -71,11 +73,13 @@ func withPanicRecovery[T any](
 		req *mcp.CallToolRequest,
 		args T,
 	) (result *mcp.CallToolResult, response any, err error) {
+		ctx = withMCPRequestProgress(ctx, req)
+
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				logrus.WithFields(logrus.Fields{
-					"tool":  toolName,
-					"panic": recovered,
+					"tool":       toolName,
+					"panic_type": fmt.Sprintf("%T", recovered),
 				}).Error("Tool handler panicked")
 				logrus.Errorf("Stack trace:\n%s", debug.Stack())
 
@@ -94,6 +98,34 @@ func withPanicRecovery[T any](
 
 		return handler(ctx, req, args)
 	}
+}
+
+func withMCPRequestProgress(
+	ctx context.Context,
+	req *mcp.CallToolRequest,
+) context.Context {
+	if req == nil || req.Params == nil || req.Session == nil {
+		return ctx
+	}
+	token := req.Params.GetProgressToken()
+	if token == nil {
+		return ctx
+	}
+
+	var warnOnce sync.Once
+	return withProgressReporter(ctx, func(message string) {
+		notifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		if err := req.Session.NotifyProgress(notifyCtx, &mcp.ProgressNotificationParams{
+			ProgressToken: token,
+			Message:       message,
+		}); err != nil {
+			warnOnce.Do(func() {
+				logrus.WithField("error_type", fmt.Sprintf("%T", err)).
+					Warn("Failed to send MCP progress")
+			})
+		}
+	})
 }
 
 // registerReadOnlyTools keeps upstream additions out of the public interface.
@@ -143,7 +175,7 @@ func registerReadOnlyTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "list_feeds",
-			Description: "Read the home feed",
+			Description: "Read home-feed summaries for shortlisting",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "List Feeds",
 				ReadOnlyHint: true,
@@ -164,7 +196,7 @@ func registerReadOnlyTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "search_feeds",
-			Description: "Search Xiaohongshu or RedNote content; login required",
+			Description: "Search content for shortlisting before detail calls; login required",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Search Feeds",
 				ReadOnlyHint: true,
@@ -185,9 +217,9 @@ func registerReadOnlyTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name: "get_feed_detail",
-			Description: "Read a note, author, interaction data, and comments. " +
+			Description: "Read one shortlisted note, author, interaction data, and comments. " +
 				"Video notes also return temporary video and subtitle URLs. " +
-				"Set load_all_comments=true to load beyond the initial comments.",
+				"Loading comments is expensive and can run for up to 10 minutes.",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Feed Detail",
 				ReadOnlyHint: true,

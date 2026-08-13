@@ -74,6 +74,13 @@ func (s *AppServer) Start(port string) error {
 		logrus.Infof("服务器已优雅关闭")
 	}
 
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	if err := s.xiaohongshuService.Close(closeCtx); err != nil {
+		logrus.WithField("error_type", fmt.Sprintf("%T", err)).
+			Warn("Browser runtime did not close cleanly")
+	}
+
 	return nil
 }
 

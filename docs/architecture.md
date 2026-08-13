@@ -29,11 +29,13 @@ XiaohongshuService
         +--> accessGate
         |      serializes requests
         |      applies cooldown and jitter
+        |      enforces queue and operation deadlines
+        |      reports progress and stuck work
         |
-        +--> browser factory
-               resolves Chromium
-               injects site cookies
-               pins browser identity inputs
+        +--> reusable browser runtime
+               launches Chromium once
+               opens a fresh page per operation
+               resets after transport failures or cancellation
         |
         v
 site action in xiaohongshu/
@@ -47,8 +49,21 @@ Xiaohongshu or RedNote
 ### Access gate
 
 `access_gate.go` exposes one operation interface and hides serialization,
-cooldown, jitter, cancellation, and completion timing. Callers receive safety
-behavior without coordinating it themselves.
+cooldown, jitter, queue limits, server deadlines, cancellation, progress
+heartbeats, and completion timing. A running operation that ignores
+cancellation no longer holds the MCP response open indefinitely. The gate
+returns a timeout, marks itself degraded until cleanup finishes, and releases
+already queued callers with a clear error.
+
+### Browser runtime
+
+`browser_runtime.go` owns the reusable read browser. The process is started
+lazily, while each operation still receives a fresh page. Browser startup,
+page creation, page work, and cleanup are bounded by context. Transport
+failures reset the process before the next read.
+
+Login QR sessions and fresh-cookie verification remain separate browser
+lifecycles because they have different durability and freshness requirements.
 
 ### Site configuration
 

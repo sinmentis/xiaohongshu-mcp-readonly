@@ -1,15 +1,47 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func decodeMCPResponse(t *testing.T, response *http.Response, target any) {
+	t.Helper()
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+
+	if !strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") {
+		require.NoError(t, json.Unmarshal(body, target))
+		return
+	}
+
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		var envelope struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if json.Unmarshal([]byte(payload), &envelope) != nil || len(envelope.ID) == 0 {
+			continue
+		}
+		require.NoError(t, json.Unmarshal([]byte(payload), target))
+		return
+	}
+	t.Fatalf("MCP response did not contain a JSON-RPC result: %s", body)
+}
 
 // TestMCPStatelessSinglePost 固定「/mcp 接受不带 initialize 握手的单次 POST」这一契约。
 //
@@ -47,7 +79,7 @@ func TestMCPStatelessSinglePost(t *testing.T) {
 			} `json:"tools"`
 		} `json:"result"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	decodeMCPResponse(t, resp, &result)
 
 	require.Nil(t, result.Error, "无握手的 tools/list 不应报错")
 	assert.NotEmpty(t, result.Result.Tools, "应返回已注册的工具")
@@ -86,7 +118,7 @@ func TestMCPInitializeIncludesReadOnlyInstructions(t *testing.T) {
 			Instructions string `json:"instructions"`
 		} `json:"result"`
 	}
-	require.NoError(t, json.NewDecoder(response.Body).Decode(&result))
+	decodeMCPResponse(t, response, &result)
 	assert.Equal(t, readOnlyServerInstructions, result.Result.Instructions)
 	assert.LessOrEqual(t, len(readOnlyServerInstructions), 512)
 }
@@ -113,7 +145,7 @@ func TestOnlyReadOnlyToolsRegistered(t *testing.T) {
 			} `json:"tools"`
 		} `json:"result"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	decodeMCPResponse(t, resp, &result)
 
 	names := make([]string, 0, len(result.Result.Tools))
 	for _, tool := range result.Result.Tools {
@@ -128,6 +160,67 @@ func TestOnlyReadOnlyToolsRegistered(t *testing.T) {
 		"get_feed_detail",
 		"user_profile",
 	}, names)
+}
+
+func TestMCPProgressUsesRequestStream(t *testing.T) {
+	appServer := NewAppServer(NewXiaohongshuService())
+	progressServer := mcp.NewServer(
+		&mcp.Implementation{Name: "progress-test", Version: "1.0"},
+		nil,
+	)
+	mcp.AddTool(
+		progressServer,
+		&mcp.Tool{Name: "progress"},
+		func(
+			ctx context.Context,
+			req *mcp.CallToolRequest,
+			_ any,
+		) (*mcp.CallToolResult, any, error) {
+			if err := req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+				ProgressToken: req.Params.GetProgressToken(),
+				Message:       "working",
+			}); err != nil {
+				return nil, nil, err
+			}
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "done"}},
+			}, nil, nil
+		},
+	)
+	appServer.mcpServer = progressServer
+
+	server := httptest.NewServer(setupRoutes(appServer))
+	defer server.Close()
+
+	request, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/mcp",
+		strings.NewReader(`{
+			"jsonrpc": "2.0",
+			"id": 1,
+			"method": "tools/call",
+			"params": {
+				"name": "progress",
+				"arguments": {},
+				"_meta": {"progressToken": "progress-1"}
+			}
+		}`),
+	)
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	assert.Contains(t, response.Header.Get("Content-Type"), "text/event-stream")
+
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"method":"notifications/progress"`)
+	assert.Contains(t, string(body), `"message":"working"`)
+	assert.Contains(t, string(body), `"text":"done"`)
 }
 
 func TestOnlyReadOnlyRoutesRegistered(t *testing.T) {
@@ -217,6 +310,109 @@ func TestLocalRequestMiddlewareAcceptsSameLoopbackOrigin(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
+}
+
+func TestHealthReportsRunningOperation(t *testing.T) {
+	service := NewXiaohongshuService(AccessPolicy{
+		MinInterval:  0,
+		MaxJitter:    0,
+		MaxQueueWait: time.Second,
+		MaxComments:  10,
+		MaxReplies:   5,
+	})
+	router := setupRoutes(NewAppServer(service))
+
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- service.accessGate.Run(
+			context.Background(),
+			"search_feeds",
+			time.Second,
+			func(context.Context) error {
+				<-release
+				return nil
+			},
+		)
+	}()
+	require.Eventually(t, func() bool {
+		return service.accessGate.Snapshot().Phase == "running"
+	}, time.Second, 10*time.Millisecond)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Host = "127.0.0.1:18060"
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Data struct {
+			Status string       `json:"status"`
+			Access accessHealth `json:"access"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "busy", response.Data.Status)
+	assert.Equal(t, "search_feeds", response.Data.Access.Operation)
+	assert.Equal(t, "running", response.Data.Access.Phase)
+
+	close(release)
+	require.NoError(t, <-done)
+}
+
+func TestHealthReportsStuckOperation(t *testing.T) {
+	service := NewXiaohongshuService(AccessPolicy{
+		MinInterval:  0,
+		MaxJitter:    0,
+		MaxQueueWait: time.Second,
+		MaxComments:  10,
+		MaxReplies:   5,
+	})
+	router := setupRoutes(NewAppServer(service))
+
+	release := make(chan struct{})
+	err := service.accessGate.Run(
+		context.Background(),
+		"get_feed_detail",
+		20*time.Millisecond,
+		func(context.Context) error {
+			<-release
+			return nil
+		},
+	)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Host = "127.0.0.1:18060"
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	var response struct {
+		Data struct {
+			Status string       `json:"status"`
+			Access accessHealth `json:"access"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "degraded", response.Data.Status)
+	assert.Equal(t, "cancelling", response.Data.Access.Phase)
+
+	close(release)
+	require.Eventually(t, func() bool {
+		return service.accessGate.Snapshot().State == "idle"
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestRequestLoggingAddsRequestID(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Host = "127.0.0.1:18060"
+
+	router.ServeHTTP(recorder, request)
+
+	assert.Regexp(t, `^req-\d+$`, recorder.Header().Get("X-Request-ID"))
 }
 
 func TestLocalRequestMiddlewareRequiresJSONForPost(t *testing.T) {

@@ -71,6 +71,9 @@ http://127.0.0.1:18060/mcp
 ```
 
 Set the tool timeout to at least 900 seconds when the client supports it.
+This is a transport ceiling, not the expected duration. The server enforces
+shorter tool-specific deadlines and reports progress when the client supports
+MCP progress notifications.
 
 ## Fallback instruction
 
@@ -79,5 +82,7 @@ Clients that ignore MCP server instructions can use:
 ```text
 Use xiaohongshu-readonly only for read operations. Check login status first.
 If logged out, direct me to the local /login page. Call one tool at a time,
-avoid repeated polling or bulk collection, and never show xsec tokens.
+avoid repeated polling or bulk collection, and never show xsec tokens. If a
+call reports busy or timed out, inspect the local /health endpoint before
+retrying.
 ```

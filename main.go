@@ -20,6 +20,7 @@ func main() {
 		port          string
 		minInterval   time.Duration
 		requestJitter time.Duration
+		maxQueueWait  time.Duration
 		maxComments   int
 		maxReplies    int
 		site          string
@@ -28,6 +29,7 @@ func main() {
 	flag.StringVar(&port, "port", "127.0.0.1:18060", "local loopback listen address")
 	flag.DurationVar(&minInterval, "min-request-interval", 30*time.Second, "minimum delay between completed site operations")
 	flag.DurationVar(&requestJitter, "request-jitter", 15*time.Second, "maximum additional random delay per operation")
+	flag.DurationVar(&maxQueueWait, "max-queue-wait", time.Minute, "maximum time to wait for another browser operation")
 	flag.IntVar(&maxComments, "max-comments", 50, "maximum top-level comments per note request")
 	flag.IntVar(&maxReplies, "max-replies", 10, "maximum reply-thread threshold")
 	flag.StringVar(&site, "site", xiaohongshu.SiteXiaohongshu, "site: xiaohongshu | rednote")
@@ -41,10 +43,11 @@ func main() {
 	logrus.Infof("site: %s", xiaohongshu.Site().Name)
 
 	accessPolicy := AccessPolicy{
-		MinInterval: minInterval,
-		MaxJitter:   requestJitter,
-		MaxComments: maxComments,
-		MaxReplies:  maxReplies,
+		MinInterval:  minInterval,
+		MaxJitter:    requestJitter,
+		MaxQueueWait: maxQueueWait,
+		MaxComments:  maxComments,
+		MaxReplies:   maxReplies,
 	}
 	if err := accessPolicy.Validate(); err != nil {
 		logrus.Fatalf("invalid access policy: %v", err)

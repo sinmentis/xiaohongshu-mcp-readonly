@@ -169,3 +169,15 @@ func (l *loginSessions) finish(seq uint64) {
 		session.stop()
 	}
 }
+
+func (l *loginSessions) stopCurrent() {
+	l.mu.Lock()
+	session := l.current
+	l.current = nil
+	l.seq++
+	l.mu.Unlock()
+
+	if session != nil {
+		session.stop()
+	}
+}
