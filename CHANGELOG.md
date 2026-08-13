@@ -11,3 +11,6 @@ All notable changes are documented here.
 - Add durable QR login verification and a localhost login page.
 - Add Linux ARM64 browser fallback.
 - Add loopback request validation and pinned browser archive hashes.
+- Reuse one browser process across read operations.
+- Add server-side deadlines, MCP progress, stuck-operation fail-fast behavior,
+  and detailed health reporting.

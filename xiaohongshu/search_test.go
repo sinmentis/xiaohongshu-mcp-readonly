@@ -87,6 +87,18 @@ func TestCollectFilters(t *testing.T) {
 		require.Empty(t, pending)
 	})
 
+	t.Run("显式默认值也不点击筛选面板", func(t *testing.T) {
+		pending, err := collectFilters([]FilterOption{{
+			SortBy:      "综合",
+			NoteType:    "不限",
+			PublishTime: "不限",
+			SearchScope: "不限",
+			Location:    "不限",
+		}})
+		require.NoError(t, err)
+		require.Empty(t, pending)
+	})
+
 	t.Run("非法取值在打开页面之前就报错", func(t *testing.T) {
 		_, err := collectFilters([]FilterOption{{NoteType: "不存在的类型"}})
 		require.Error(t, err)
@@ -107,11 +119,11 @@ func TestCollectFilters(t *testing.T) {
 // 否则以后新增字段会被静默忽略。
 func TestFilterGroupsCoverFilterOption(t *testing.T) {
 	all := FilterOption{
-		SortBy:      "综合",
-		NoteType:    "不限",
-		PublishTime: "不限",
-		SearchScope: "不限",
-		Location:    "不限",
+		SortBy:      "最新",
+		NoteType:    "视频",
+		PublishTime: "一天内",
+		SearchScope: "已关注",
+		Location:    "同城",
 	}
 
 	pending, err := collectFilters([]FilterOption{all})
@@ -120,6 +132,8 @@ func TestFilterGroupsCoverFilterOption(t *testing.T) {
 
 	for _, g := range filterGroups {
 		require.NotEmpty(t, g.label)
+		require.NotEmpty(t, g.defaultValue)
+		require.Contains(t, g.allowed, g.defaultValue)
 		require.NotEmpty(t, g.allowed, "%s 没有合法取值清单", g.label)
 		require.NotNil(t, g.pick, "%s 没有取值函数", g.label)
 	}

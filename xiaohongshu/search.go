@@ -35,21 +35,27 @@ type FilterOption struct {
 // 组和选项一律按文本定位，不用序号。面板里同一个选项可能渲染成多个 div.tags
 // （数量随视口而变），首项是否重复各组也不一致，下标对不齐。
 type filterGroup struct {
-	label   string                    // 面板上这一组的标签文本
-	pick    func(FilterOption) string // 从入参里取这一组的值
-	allowed []string                  // 合法取值；在打开页面之前就能挡掉写错的值
+	label        string                    // 面板上这一组的标签文本
+	pick         func(FilterOption) string // 从入参里取这一组的值
+	defaultValue string
+	allowed      []string // 合法取值；在打开页面之前就能挡掉写错的值
 }
 
 var filterGroups = []filterGroup{
 	{"排序依据", func(f FilterOption) string { return f.SortBy },
+		"综合",
 		[]string{"综合", "最新", "最多点赞", "最多评论", "最多收藏"}},
 	{"笔记类型", func(f FilterOption) string { return f.NoteType },
+		"不限",
 		[]string{"不限", "视频", "图文"}},
 	{"发布时间", func(f FilterOption) string { return f.PublishTime },
+		"不限",
 		[]string{"不限", "一天内", "一周内", "半年内"}},
 	{"搜索范围", func(f FilterOption) string { return f.SearchScope },
+		"不限",
 		[]string{"不限", "已看过", "未看过", "已关注"}},
 	{"位置距离", func(f FilterOption) string { return f.Location },
+		"不限",
 		[]string{"不限", "同城", "附近"}},
 }
 
@@ -75,6 +81,9 @@ func collectFilters(filters []FilterOption) ([]pendingFilter, error) {
 			if !slices.Contains(g.allowed, value) {
 				return nil, fmt.Errorf("%s 不支持 %q，可选：%s",
 					g.label, value, strings.Join(g.allowed, "、"))
+			}
+			if value == g.defaultValue {
+				continue
 			}
 			pending = append(pending, pendingFilter{group: g.label, option: value})
 		}

@@ -1,16 +1,20 @@
 package main
 
 import (
+	"fmt"
 	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
+
+var requestSequence atomic.Uint64
 
 // localRequestMiddleware rejects non-loopback hosts, cross-site browser
 // requests, cross-origin requests, and simple form POSTs.
@@ -74,20 +78,33 @@ func isLoopbackHost(hostPort string) bool {
 
 func requestLoggingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		requestID := fmt.Sprintf("req-%d", requestSequence.Add(1))
+		c.Header("X-Request-ID", requestID)
+
 		started := time.Now()
+		logrus.WithFields(logrus.Fields{
+			"request_id": requestID,
+			"method":     c.Request.Method,
+			"path":       c.Request.URL.Path,
+		}).Info("HTTP request started")
+
 		c.Next()
 		logrus.WithFields(logrus.Fields{
-			"method":  c.Request.Method,
-			"path":    c.Request.URL.Path,
-			"status":  c.Writer.Status(),
-			"latency": time.Since(started),
-		}).Info("HTTP request")
+			"request_id": requestID,
+			"method":     c.Request.Method,
+			"path":       c.Request.URL.Path,
+			"status":     c.Writer.Status(),
+			"latency":    time.Since(started),
+		}).Info("HTTP request finished")
 	}
 }
 
 func errorHandlingMiddleware() gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
-		logrus.Errorf("服务器内部错误: %v, path: %s", recovered, c.Request.URL.Path)
+		logrus.WithFields(logrus.Fields{
+			"panic_type": fmt.Sprintf("%T", recovered),
+			"path":       c.Request.URL.Path,
+		}).Error("HTTP handler panicked")
 
 		respondError(c, http.StatusInternalServerError, "INTERNAL_ERROR",
 			"Internal server error", nil)

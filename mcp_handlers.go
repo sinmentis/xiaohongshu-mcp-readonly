@@ -35,7 +35,7 @@ func (s *AppServer) handleCheckLoginStatus(ctx context.Context) *MCPToolResult {
 		return &MCPToolResult{
 			Content: []MCPContent{{
 				Type: "text",
-				Text: "Failed to check login status: " + err.Error(),
+				Text: "Failed to check login status: " + safeErrorText(err),
 			}},
 			IsError: true,
 		}
@@ -84,7 +84,7 @@ func (s *AppServer) handleGetLoginQrcode(ctx context.Context) *MCPToolResult {
 	result, err := s.xiaohongshuService.GetLoginQrcode(ctx)
 	if err != nil {
 		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "Failed to get login QR code: " + err.Error()}},
+			Content: []MCPContent{{Type: "text", Text: "Failed to get login QR code: " + safeErrorText(err)}},
 			IsError: true,
 		}
 	}
@@ -298,7 +298,7 @@ func (s *AppServer) handleListFeeds(ctx context.Context) *MCPToolResult {
 		return &MCPToolResult{
 			Content: []MCPContent{{
 				Type: "text",
-				Text: "Failed to list feeds: " + err.Error(),
+				Text: "Failed to list feeds: " + safeErrorText(err),
 			}},
 			IsError: true,
 		}
@@ -337,8 +337,6 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 		}
 	}
 
-	logrus.Infof("MCP: 搜索Feeds - 关键词: %s", args.Keyword)
-
 	filter := xiaohongshu.FilterOption{
 		SortBy:      args.Filters.SortBy,
 		NoteType:    args.Filters.NoteType,
@@ -352,7 +350,7 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 		return &MCPToolResult{
 			Content: []MCPContent{{
 				Type: "text",
-				Text: "Search failed: " + err.Error(),
+				Text: "Search failed: " + safeErrorText(err),
 			}},
 			IsError: true,
 		}
@@ -411,13 +409,6 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args FeedDetailArgs
 		}
 	}
 
-	logrus.Infof(
-		"MCP: 获取Feed详情 - Feed ID: %s, loadAllComments=%v, config=%+v",
-		args.FeedID,
-		args.LoadAllComments,
-		config,
-	)
-
 	result, err := s.xiaohongshuService.GetFeedDetailWithConfig(
 		ctx,
 		args.FeedID,
@@ -429,7 +420,7 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args FeedDetailArgs
 		return &MCPToolResult{
 			Content: []MCPContent{{
 				Type: "text",
-				Text: "Feed detail failed: " + err.Error(),
+				Text: "Feed detail failed: " + safeErrorText(err),
 			}},
 			IsError: true,
 		}
@@ -480,8 +471,6 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 		}
 	}
 
-	logrus.Infof("MCP: 获取用户主页 - User ID: %s", userID)
-
 	tab, _ := args["tab"].(string)
 
 	result, err := s.xiaohongshuService.UserProfile(ctx, userID, xsecToken, tab)
@@ -489,7 +478,7 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 		return &MCPToolResult{
 			Content: []MCPContent{{
 				Type: "text",
-				Text: "User profile failed: " + err.Error(),
+				Text: "User profile failed: " + safeErrorText(err),
 			}},
 			IsError: true,
 		}

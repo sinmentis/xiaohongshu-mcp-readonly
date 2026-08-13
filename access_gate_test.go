@@ -13,7 +13,7 @@ import (
 )
 
 func TestAccessGateSerializesOperations(t *testing.T) {
-	gate := newAccessGate(0, 0)
+	gate := newAccessGate(0, 0, time.Second)
 
 	var active atomic.Int32
 	var maxActive atomic.Int32
@@ -25,7 +25,7 @@ func TestAccessGateSerializesOperations(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			errs <- gate.Run(context.Background(), "test", func() error {
+			errs <- gate.Run(context.Background(), "test", time.Second, func(context.Context) error {
 				current := active.Add(1)
 				defer active.Add(-1)
 
@@ -52,24 +52,53 @@ func TestAccessGateSerializesOperations(t *testing.T) {
 
 func TestAccessGateEnforcesCooldown(t *testing.T) {
 	const cooldown = 40 * time.Millisecond
-	gate := newAccessGate(cooldown, 0)
+	gate := newAccessGate(cooldown, 0, time.Second)
 
-	require.NoError(t, gate.Run(context.Background(), "first", func() error {
+	require.NoError(t, gate.Run(context.Background(), "first", time.Second, func(context.Context) error {
 		return nil
 	}))
 
 	started := time.Now()
-	require.NoError(t, gate.Run(context.Background(), "second", func() error {
+	require.NoError(t, gate.Run(context.Background(), "second", time.Second, func(context.Context) error {
 		return nil
 	}))
 
 	assert.GreaterOrEqual(t, time.Since(started), 30*time.Millisecond)
 }
 
-func TestAccessGateHonorsCancellation(t *testing.T) {
-	gate := newAccessGate(200*time.Millisecond, 0)
+func TestAccessGateReportsCooldownAndStart(t *testing.T) {
+	gate := newAccessGate(40*time.Millisecond, 0, time.Second)
+	require.NoError(t, gate.Run(
+		context.Background(),
+		"first",
+		time.Second,
+		func(context.Context) error { return nil },
+	))
 
-	require.NoError(t, gate.Run(context.Background(), "first", func() error {
+	messages := make(chan string, 4)
+	ctx := withProgressReporter(context.Background(), func(message string) {
+		messages <- message
+	})
+	require.NoError(t, gate.Run(
+		ctx,
+		"second",
+		time.Second,
+		func(context.Context) error { return nil },
+	))
+	close(messages)
+
+	var joined string
+	for message := range messages {
+		joined += message + "\n"
+	}
+	assert.Contains(t, joined, "access cooldown")
+	assert.Contains(t, joined, "effective deadline")
+}
+
+func TestAccessGateHonorsCancellation(t *testing.T) {
+	gate := newAccessGate(200*time.Millisecond, 0, time.Second)
+
+	require.NoError(t, gate.Run(context.Background(), "first", time.Second, func(context.Context) error {
 		return nil
 	}))
 
@@ -77,7 +106,7 @@ func TestAccessGateHonorsCancellation(t *testing.T) {
 	defer cancel()
 
 	called := false
-	err := gate.Run(ctx, "second", func() error {
+	err := gate.Run(ctx, "second", time.Second, func(context.Context) error {
 		called = true
 		return nil
 	})
@@ -86,14 +115,31 @@ func TestAccessGateHonorsCancellation(t *testing.T) {
 	assert.False(t, called)
 }
 
+func TestAccessGateDoesNotRunAlreadyCancelledRequest(t *testing.T) {
+	for range 100 {
+		gate := newAccessGate(0, 0, time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		called := false
+		err := gate.Run(ctx, "cancelled", time.Second, func(context.Context) error {
+			called = true
+			return nil
+		})
+
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.False(t, called)
+	}
+}
+
 func TestAccessGateHonorsCancellationWhileQueued(t *testing.T) {
-	gate := newAccessGate(0, 0)
+	gate := newAccessGate(0, 0, time.Second)
 
 	holding := make(chan struct{})
 	releaseHolder := make(chan struct{})
 	holderDone := make(chan error, 1)
 	go func() {
-		holderDone <- gate.Run(context.Background(), "holder", func() error {
+		holderDone <- gate.Run(context.Background(), "holder", time.Second, func(context.Context) error {
 			close(holding)
 			<-releaseHolder
 			return nil
@@ -107,7 +153,7 @@ func TestAccessGateHonorsCancellationWhileQueued(t *testing.T) {
 	queuedStarted := make(chan struct{})
 	go func() {
 		close(queuedStarted)
-		queuedDone <- gate.Run(ctx, "queued", func() error {
+		queuedDone <- gate.Run(ctx, "queued", time.Second, func(context.Context) error {
 			called.Store(true)
 			return nil
 		})
@@ -133,12 +179,166 @@ func TestAccessGateHonorsCancellationWhileQueued(t *testing.T) {
 	assert.False(t, called.Load())
 }
 
+func TestAccessGateAllowsCooperativeCancellationToCleanUp(t *testing.T) {
+	gate := newAccessGate(0, 0, time.Second)
+	gate.cancellationGrace = 20 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- gate.Run(ctx, "cancelled", time.Second, func(operationCtx context.Context) error {
+			close(started)
+			<-operationCtx.Done()
+			return operationCtx.Err()
+		})
+	}()
+	<-started
+	cancel()
+
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Eventually(t, func() bool {
+		return gate.Snapshot().State == "idle"
+	}, time.Second, 10*time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
+	assert.NotEqual(t, "degraded", gate.Snapshot().State)
+}
+
+func TestAccessGateEscalatesIgnoredCancellation(t *testing.T) {
+	gate := newAccessGate(0, 0, time.Second)
+	gate.cancellationGrace = 20 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- gate.Run(ctx, "cancelled", time.Second, func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+	cancel()
+
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Eventually(t, func() bool {
+		return gate.Snapshot().State == "degraded"
+	}, time.Second, 10*time.Millisecond)
+
+	close(release)
+	require.Eventually(t, func() bool {
+		return gate.Snapshot().State == "idle"
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestAccessGateReturnsWhenRunningOperationContextExpires(t *testing.T) {
+	gate := newAccessGate(0, 0, time.Second)
+
+	releaseOperation := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- gate.Run(context.Background(), "blocked", 20*time.Millisecond, func(context.Context) error {
+			<-releaseOperation
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(200 * time.Millisecond):
+		close(releaseOperation)
+		<-done
+		t.Fatal("running operation did not return after its context deadline")
+	}
+
+	snapshot := gate.Snapshot()
+	assert.Equal(t, "degraded", snapshot.State)
+	assert.Equal(t, "cancelling", snapshot.Phase)
+
+	started := time.Now()
+	err := gate.Run(context.Background(), "next", time.Second, func(context.Context) error {
+		return nil
+	})
+	assert.ErrorAs(t, err, new(*accessGateUnavailableError))
+	assert.Less(t, time.Since(started), 50*time.Millisecond)
+
+	close(releaseOperation)
+	require.Eventually(t, func() bool {
+		return gate.Snapshot().State == "idle"
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestAccessGateReleasesQueuedCallerWhenActiveOperationTimesOut(t *testing.T) {
+	gate := newAccessGate(0, 0, time.Second)
+
+	releaseOperation := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- gate.Run(
+			context.Background(),
+			"holder",
+			40*time.Millisecond,
+			func(context.Context) error {
+				<-releaseOperation
+				return nil
+			},
+		)
+	}()
+	require.Eventually(t, func() bool {
+		return gate.Snapshot().Phase == "running"
+	}, time.Second, 10*time.Millisecond)
+
+	queuedDone := make(chan error, 1)
+	go func() {
+		queuedDone <- gate.Run(
+			context.Background(),
+			"queued",
+			time.Second,
+			func(context.Context) error {
+				return nil
+			},
+		)
+	}()
+	require.Eventually(t, func() bool {
+		return gate.Snapshot().Queued == 1
+	}, time.Second, 10*time.Millisecond)
+
+	require.ErrorIs(t, <-holderDone, context.DeadlineExceeded)
+	select {
+	case err := <-queuedDone:
+		assert.ErrorAs(t, err, new(*accessGateUnavailableError))
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("queued request kept waiting after the active operation timed out")
+	}
+
+	close(releaseOperation)
+	require.Eventually(t, func() bool {
+		return gate.Snapshot().State == "idle"
+	}, time.Second, 10*time.Millisecond)
+}
+
 func TestAccessPolicyValidation(t *testing.T) {
 	policy := DefaultAccessPolicy()
 	require.NoError(t, policy.Validate())
 
+	policy.MaxQueueWait = 0
+	assert.EqualError(t, policy.Validate(), "maximum queue wait must be greater than zero")
+
+	policy = DefaultAccessPolicy()
 	policy.MaxComments = 0
 	assert.EqualError(t, policy.Validate(), "maximum comments must be greater than zero")
+}
+
+func TestServiceDefaultsMissingQueueWait(t *testing.T) {
+	service := NewXiaohongshuService(AccessPolicy{
+		MaxComments: 10,
+		MaxReplies:  5,
+	})
+
+	assert.Equal(t, defaultMaxQueueWait, service.accessGate.maxQueueWait)
 }
 
 func TestCommentPolicyCapsLargeRequests(t *testing.T) {

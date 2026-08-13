@@ -41,6 +41,26 @@ existing Playwright Chromium build.
 The delay is intentional. By default, every completed operation is followed by
 at least 30 seconds plus up to 15 seconds of jitter.
 
+The first browser-backed request also starts Chromium. Later reads reuse that
+browser process. Check the current phase without interrupting the request:
+
+```bash
+curl --fail-with-body http://127.0.0.1:18060/health | jq
+```
+
+The response distinguishes `healthy`, `busy`, and `degraded` states and shows
+the active operation, phase, elapsed time, deadline, remaining time, queue
+depth, and browser runtime state.
+
+If an operation reaches its server deadline, the MCP or HTTP call returns an
+explicit timeout instead of waiting indefinitely. `/health` remains degraded
+while the canceled browser work is still unwinding. Do not retry until it
+returns to `healthy`; restart the service if it stays degraded:
+
+```bash
+systemctl --user restart xiaohongshu-mcp-readonly.service
+```
+
 ## `403 LOCAL_ONLY`
 
 Use `127.0.0.1`, `localhost`, or `::1`. The server intentionally rejects LAN

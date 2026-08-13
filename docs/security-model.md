@@ -69,6 +69,8 @@ will accept automated access.
 
 ## Logs
 
-Request logs contain method, path, status, and latency. They intentionally omit
-query strings. Application logs must not include cookies, QR payloads, tokens,
-or proxy credentials.
+Request logs contain a process-local request ID, method, path, status, and
+latency. They intentionally omit query strings and request bodies. Browser
+operation logs contain only operation names, IDs, phases, timing, and error
+types. Application logs must not include cookies, QR payloads, tokens, search
+keywords, or proxy credentials.

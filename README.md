@@ -25,6 +25,11 @@ See [NOTICE](NOTICE) and [docs/upstream.md](docs/upstream.md).
 - QR login in Copilot CLI or at `http://127.0.0.1:18060/login`.
 - Fresh-browser verification before login is reported as successful.
 - One browser operation at a time, with cooldown and random jitter.
+- One reusable browser process with a fresh page per read operation.
+- Server-side operation deadlines, fail-fast stuck-operation handling, and MCP
+  progress notifications.
+- `/health` visibility into active work, queue depth, deadlines, and browser
+  runtime state.
 - Comment and reply limits with forced slow scrolling.
 - Loopback-only listening, local Host/Origin checks, and JSON-only POSTs.
 - Linux ARM64 fallback to an installed Chromium or Playwright Chromium.
@@ -96,6 +101,7 @@ The MCP and HTTP surfaces are both tested against explicit allowlists.
 Default browser access is deliberately slow:
 
 - one operation at a time;
+- at most 1 minute waiting for another operation to release the browser;
 - at least 30 seconds between completed operations;
 - up to 15 seconds of additional random delay;
 - at most 50 top-level comments per request;
@@ -104,6 +110,12 @@ Default browser access is deliberately slow:
 
 These controls reduce accidental bursts. They cannot guarantee that an account
 will never be challenged or restricted. Avoid unattended bulk collection.
+
+The first browser-backed call starts Chromium. Later read calls reuse that
+process and open a fresh page, avoiding a full browser launch on every tool
+call. Each tool also has a server-side deadline. A timed-out operation returns
+an explicit error, marks `/health` as degraded while cleanup continues, and
+prevents queued calls from waiting behind work that is already stuck.
 
 ## Documentation
 

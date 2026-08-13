@@ -32,6 +32,7 @@ COOKIES_PATH="$HOME/.local/share/xiaohongshu-mcp-readonly/cookies.json" \
   -port 127.0.0.1:18060 \
   -min-request-interval 30s \
   -request-jitter 15s \
+  -max-queue-wait 1m \
   -max-comments 50 \
   -max-replies 10
 ```
@@ -75,6 +76,10 @@ copilot mcp add \
 ```
 
 Run `/mcp` inside Copilot CLI to confirm the connection.
+
+The client timeout is only a transport ceiling. The server applies shorter
+tool-specific deadlines, reports MCP progress when the client supplies a
+progress token, and returns an error instead of waiting indefinitely.
 
 Example prompts:
 
