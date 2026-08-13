@@ -1,4 +1,4 @@
-# 小红书 MCP 只读版
+# 小红书 / RedNote MCP Server（只读版）
 
 **简体中文** | [English](README.en.md)
 
@@ -6,13 +6,21 @@
 [![CodeQL](https://github.com/sinmentis/xiaohongshu-mcp-readonly/actions/workflows/codeql.yml/badge.svg)](https://github.com/sinmentis/xiaohongshu-mcp-readonly/actions/workflows/codeql.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-这是一个只跑在本机、只提供读取功能的 MCP 服务。它可以让 GitHub
-Copilot CLI 等 AI Agent 读取小红书或 RedNote 上的公开内容。
+这是一个只跑在本机、只提供读取功能的小红书 / RedNote MCP Server
+（Model Context Protocol 服务）。它支持 GitHub Copilot CLI、Claude Code、
+Codex CLI 和 Cursor，让 AI Agent 搜索和读取公开笔记、评论和用户主页。
 
 > [!IMPORTANT]
 > 这个版本只开放 6 个只读 MCP 工具。不能发笔记、评论、回复、点赞、收藏，
 > 也不能读取通知或删除 Cookie。自动化浏览器进行登录、搜索和浏览时，平台仍然
 > 可能记录这些操作。
+
+## 扫码登录长这样
+
+![小红书和 RedNote MCP 本地网页扫码登录界面，使用无效的 mock 二维码](docs/images/login-page.webp)
+
+> 这是文档示意图。图里的二维码是 mock，不能登录，也不包含任何真实账号或会话
+> 信息。实际登录页只在本机的 `http://127.0.0.1:18060/login` 打开。
 
 本项目基于
 [`xpzouying/xiaohongshu-mcp`](https://github.com/xpzouying/xiaohongshu-mcp)

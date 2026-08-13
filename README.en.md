@@ -1,4 +1,4 @@
-# Xiaohongshu MCP Readonly
+# Xiaohongshu / RedNote MCP Server (Read-only)
 
 [简体中文](README.md) | **English**
 
@@ -6,14 +6,23 @@
 [![CodeQL](https://github.com/sinmentis/xiaohongshu-mcp-readonly/actions/workflows/codeql.yml/badge.svg)](https://github.com/sinmentis/xiaohongshu-mcp-readonly/actions/workflows/codeql.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-A conservative, localhost-only MCP server that lets GitHub Copilot CLI read
-public Xiaohongshu and RedNote content.
+A localhost-only, read-only Model Context Protocol (MCP) server for Xiaohongshu
+and RedNote. It works with GitHub Copilot CLI, Claude Code, Codex CLI, and
+Cursor to search and read public notes, comments, and profiles.
 
 > [!IMPORTANT]
 > This fork exposes exactly six read-only MCP tools. It does not expose
 > publishing, commenting, replying, liking, favoriting, notification, or cookie
 > deletion tools. The websites can still record logins, searches, and page
 > views performed by the automated browser.
+
+## QR login preview
+
+![Local Xiaohongshu and RedNote MCP browser login page with a nonfunctional mock QR code](docs/images/login-page.webp)
+
+> This documentation preview uses a nonfunctional mock QR code. It contains no
+> real account or session data. The actual page is available only locally at
+> `http://127.0.0.1:18060/login`.
 
 This project is an unofficial modified fork of
 [`xpzouying/xiaohongshu-mcp`](https://github.com/xpzouying/xiaohongshu-mcp).
