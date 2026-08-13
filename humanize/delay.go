@@ -6,9 +6,9 @@ import (
 )
 
 func Delay(ctx context.Context, action Action) {
-	dist, ok := defaultProvider.Timing()[action]
+	dist, ok := defaultTiming[action]
 	if !ok {
-		dist = defaultProvider.Timing()[AfterClick]
+		dist = defaultTiming[AfterClick]
 	}
 
 	t := time.NewTimer(dist.Sample())

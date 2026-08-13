@@ -24,7 +24,6 @@ func NewFeedsListAction(page *rod.Page) *FeedsListAction {
 	return &FeedsListAction{page: pp}
 }
 
-// GetFeedsList 获取页面的 Feed 列表数据
 func (f *FeedsListAction) GetFeedsList(ctx context.Context) ([]Feed, error) {
 	// 重设超时：.Context(ctx) 会替换掉构造函数里 Timeout(60s) 的 deadline
 	page := f.page.Context(ctx).Timeout(60 * time.Second)

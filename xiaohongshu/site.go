@@ -13,26 +13,23 @@ const (
 
 // SiteConfig owns site URLs and locale behavior.
 type SiteConfig struct {
-	Name       string
-	Base       string
-	Home       string
-	PublishURL string
-	ForceZhCN  bool
+	Name      string
+	Base      string
+	Home      string
+	ForceZhCN bool
 }
 
 var sites = map[string]SiteConfig{
 	SiteXiaohongshu: {
-		Name:       SiteXiaohongshu,
-		Base:       "https://www.xiaohongshu.com",
-		Home:       "https://www.xiaohongshu.com/explore",
-		PublishURL: "https://creator.xiaohongshu.com/publish/publish?source=official",
+		Name: SiteXiaohongshu,
+		Base: "https://www.xiaohongshu.com",
+		Home: "https://www.xiaohongshu.com/explore",
 	},
 	SiteRednote: {
-		Name:       SiteRednote,
-		Base:       "https://www.rednote.com",
-		Home:       "https://www.rednote.com/explore",
-		PublishURL: "https://creator.rednote.com/publish/publish?source=official",
-		ForceZhCN:  true,
+		Name:      SiteRednote,
+		Base:      "https://www.rednote.com",
+		Home:      "https://www.rednote.com/explore",
+		ForceZhCN: true,
 	},
 }
 

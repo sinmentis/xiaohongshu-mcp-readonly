@@ -42,9 +42,8 @@ route set. It does not expose account mutation operations.
 Read-only does not mean invisible. The platform can record logins, searches,
 page views, and automated browsing behavior.
 
-Some upstream-derived mutation implementation remains in the source tree to
-keep upstream rebases reviewable. It is not registered in the public
-composition roots. Tests assert the exact MCP tool and HTTP route sets.
+The fork omits upstream account-mutation implementations. Tests assert the
+exact MCP tool and HTTP route sets.
 
 ## Session data
 

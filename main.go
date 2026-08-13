@@ -64,17 +64,13 @@ func main() {
 	}
 
 	configs.InitHeadless(headless)
-	// 入口层解析出 seed 和代理，经 configs 透传给浏览器工厂。
-	// seed 取值：环境变量 > 站点会话文件 > 新生成并写回。
 	configs.SetFingerprintSeed(configs.ResolveFingerprintSeed(
 		cookies.NewLoadCookie(cookies.GetCookiesFilePathForSite(site))))
 	configs.SetProxy(configs.ProxyFromEnv())
 	configs.SetBrowser(resolution.Path, resolution.SourceFingerprint)
 
-	// 初始化服务
 	xiaohongshuService := NewXiaohongshuService(accessPolicy)
 
-	// 创建并启动应用服务器
 	appServer := NewAppServer(xiaohongshuService)
 	if err := appServer.Start(port); err != nil {
 		logrus.Fatalf("failed to run server: %v", err)

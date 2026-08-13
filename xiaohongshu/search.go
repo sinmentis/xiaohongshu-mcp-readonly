@@ -21,7 +21,6 @@ type SearchResult struct {
 	} `json:"search"`
 }
 
-// FilterOption 筛选选项结构体
 type FilterOption struct {
 	SortBy      string `json:"sort_by,omitempty" jsonschema:"排序依据: 综合|最新|最多点赞|最多评论|最多收藏,默认为'综合'"`
 	NoteType    string `json:"note_type,omitempty" jsonschema:"笔记类型: 不限|视频|图文,默认为'不限'"`
@@ -30,15 +29,12 @@ type FilterOption struct {
 	Location    string `json:"location,omitempty" jsonschema:"位置距离: 不限|同城|附近,默认为'不限'"`
 }
 
-// filterGroup 面板上的一个筛选组：标签是什么、对应入参的哪个字段、允许哪些取值。
-//
-// 组和选项一律按文本定位，不用序号。面板里同一个选项可能渲染成多个 div.tags
-// （数量随视口而变），首项是否重复各组也不一致，下标对不齐。
+// Text matching is required because duplicate tags make index-based selectors unstable.
 type filterGroup struct {
-	label        string                    // 面板上这一组的标签文本
-	pick         func(FilterOption) string // 从入参里取这一组的值
+	label        string
+	pick         func(FilterOption) string
 	defaultValue string
-	allowed      []string // 合法取值；在打开页面之前就能挡掉写错的值
+	allowed      []string
 }
 
 var filterGroups = []filterGroup{
@@ -59,16 +55,12 @@ var filterGroups = []filterGroup{
 		[]string{"不限", "同城", "附近"}},
 }
 
-// pendingFilter 一个待应用的筛选项。
 type pendingFilter struct {
-	group  string // 组标签
-	option string // 选项文本
+	group  string
+	option string
 }
 
-// collectFilters 把入参展开成待应用的筛选项，顺便校验取值。
-//
-// 校验放在这里是为了在打开浏览器之前就挡掉写错的值——否则要等导航、悬停、
-// 在面板里找不到之后才能报错，等于为了说一句"你写错了"先向平台发一次请求。
+// Validate before navigation so invalid filters do not trigger a site request.
 func collectFilters(filters []FilterOption) ([]pendingFilter, error) {
 	var pending []pendingFilter
 
@@ -137,7 +129,6 @@ func navigateToSearch(page searchNavigator, searchURL string) error {
 }
 
 func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...FilterOption) ([]Feed, error) {
-	// 先校验筛选取值，必须在导航之前——写错的值不该先向平台发一次请求再报错。
 	pending, err := collectFilters(filters)
 	if err != nil {
 		return nil, err
@@ -153,21 +144,17 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	if len(pending) > 0 {
-		// 悬停在筛选按钮上展开面板
 		filterButton := page.MustElement(`div.filter`)
 		if err := humanize.Hover(filterButton); err != nil {
 			return nil, fmt.Errorf("悬停筛选按钮失败: %w", err)
 		}
 		humanize.Delay(ctx, humanize.BeforeClick)
 
-		// 等待筛选面板出现
 		page.MustWait(`() => document.querySelector('div.filter-panel') !== null`)
 
-		// 记下筛选前的结果，用来判断筛选后的数据什么时候到位
 		before := readFeedIDs(page)
 
-		// 用 ClickNoWait：筛选面板是 hover 浮层，rod 的 WaitInteractable 会误判被遮挡而死等；
-		// ClickNoWait 移进面板内选项（维持 hover、面板不关）再点。
+		// WaitInteractable misreads the hover panel as blocked; ClickNoWait keeps it open.
 		for _, pf := range pending {
 			option, err := findFilterOption(page, pf)
 			if err != nil {
@@ -207,7 +194,6 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	return onlyNotes(feeds), nil
 }
 
-// feedIDsJS 读当前结果集的 id 列表，用来判断数据有没有换一批。
 const feedIDsJS = `() => {
 	const f = window.__INITIAL_STATE__?.search?.feeds;
 	const v = f ? (f.value !== undefined ? f.value : f._value) : null;
@@ -222,14 +208,7 @@ func readFeedIDs(page *rod.Page) string {
 	return res.Value.Str()
 }
 
-// waitFeedsChanged 等筛选后的数据到位。
-//
-// 点完筛选项之后不能立刻读结果：站点是先把 feeds 清空、再灌入新数据，
-// 中间这段时间读到的要么是空，要么还是筛选前那一批。原先用
-// MustWait(__INITIAL_STATE__ !== undefined) 等，而这个条件从首屏起就为真、
-// 立即返回，等于没等——多个筛选项一起用时表现为只有一部分生效。
-//
-// 超时不报错：筛选已经点上了，宁可返回可能偏旧的数据，也不要整个搜索失败。
+// The site clears feeds before refilling them, so wait for a changed non-empty ID set.
 func waitFeedsChanged(page *rod.Page, before string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -241,14 +220,7 @@ func waitFeedsChanged(page *rod.Page, before string, timeout time.Duration) {
 	logrus.Warnf("筛选后等待结果刷新超时（%s），返回的可能是筛选前的数据", timeout)
 }
 
-// findFilterOption 在筛选面板里定位一个选项：按标签找到组，再在组内按文本找选项。
-//
-// 全程不用序号。同一个选项在面板里可能渲染成多个 div.tags（数量随视口而变，
-// 且首项是否重复各组不一致），下标对不齐；早前用 div.tags:nth-child(N) 会选错项。
-// 多份重复的位置尺寸完全相同，取第一个点下去落在同一处。
-//
-// 作用域必须限定在 div.filter-panel 内且只认 div.tags：页面别处存在同文本的
-// 可见元素（顶部频道栏的「图文」「视频」、标签「综合」），放宽会点错地方。
+// Scope text matching to the filter panel; the page repeats these labels elsewhere.
 func findFilterOption(page *rod.Page, pf pendingFilter) (*rod.Element, error) {
 	groups, err := page.Elements("div.filter-panel div.filters")
 	if err != nil {
@@ -256,7 +228,6 @@ func findFilterOption(page *rod.Page, pf pendingFilter) (*rod.Element, error) {
 	}
 
 	for _, group := range groups {
-		// 组标签是 div.filters 下的直接子 span
 		label, err := group.Element(":scope > span")
 		if err != nil {
 			continue
@@ -291,12 +262,9 @@ func findFilterOption(page *rod.Page, pf pendingFilter) (*rod.Element, error) {
 }
 
 func makeSearchURL(keyword string) string {
-
 	values := url.Values{}
 	values.Set("keyword", keyword)
 	values.Set("source", "web_explore_feed")
 
-	//https://www.xiaohongshu.com/search_result?keyword=%25E7%258E%258B%25E5%25AD%2590&source=web_search_result_notes
-	//https://www.xiaohongshu.com/search_result?keyword=%25E7%258E%258B%25E5%25AD%2590&source=web_explore_feed
 	return fmt.Sprintf("%s/search_result?%s", Site().Base, values.Encode())
 }

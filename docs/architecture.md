@@ -2,10 +2,10 @@
 
 ## Public interface
 
-The product interface is deliberately smaller than the upstream implementation:
-six read-only MCP tools, matching local HTTP routes, and a localhost login page.
-MCP initialization also supplies server-wide read-only and pacing instructions
-to compatible clients.
+The product interface is six read-only MCP tools, matching local HTTP routes,
+and a localhost login page. Account-mutation implementations from upstream are
+not carried in this fork. MCP initialization supplies server-wide read-only and
+pacing instructions to compatible clients.
 
 The composition roots are:
 
@@ -88,17 +88,6 @@ then verify those cookies in a fresh browser before reporting success.
 
 Downloaded archives are checked against repository-pinned SHA256 values and
 extracted without links or path traversal.
-
-## Upstream-derived mutation code
-
-Some account-mutation implementation remains in the source tree to keep
-upstream rebases reviewable. It is outside the public composition roots and is
-not reachable through MCP or HTTP. CI tests assert the exact registered tool
-and route sets.
-
-Removing that implementation is a possible later refactor once upstream churn
-stabilizes. The public interface should not change when that implementation is
-deleted.
 
 ## Current design debt
 
