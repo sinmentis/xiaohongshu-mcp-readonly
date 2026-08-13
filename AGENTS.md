@@ -45,7 +45,9 @@ reviewable. Do not add abstractions without a real second adapter or test seam.
 
 ## Code style
 
-- Use English for public documentation, identifiers, commits, and new comments.
+- - Keep `README.md` in plain Simplified Chinese as the default repository
+ introduction, with the English version in `README.en.md`. Use English for
+ other public documentation, identifiers, commits, and new comments.
 - Existing concise Chinese comments in upstream-derived code may remain unless
   a whole section is being rewritten.
 - Prefer go-rod operations over large JavaScript injections.
