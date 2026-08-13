@@ -8,170 +8,94 @@
 
 A localhost-only, read-only Model Context Protocol (MCP) server for Xiaohongshu
 and RedNote. It works with GitHub Copilot CLI, Claude Code, Codex CLI, and
-Cursor to search and read public notes, comments, and profiles.
+Cursor to search public notes, read comments, and view user profiles.
 
 > [!IMPORTANT]
-> This fork exposes exactly six read-only MCP tools. It does not expose
-> publishing, commenting, replying, liking, favoriting, notification, or cookie
-> deletion tools. The websites can still record logins, searches, and page
-> views performed by the automated browser.
+> This server exposes exactly six read-only tools. It cannot publish, comment,
+> reply, like, favorite, read notifications, or delete cookies. The platform
+> can still record browser logins, searches, and page views.
 
-## QR login preview
+![Local Xiaohongshu and RedNote MCP login page with a nonfunctional mock QR code](docs/images/login-page.webp)
 
-![Local Xiaohongshu and RedNote MCP browser login page with a nonfunctional mock QR code](docs/images/login-page.webp)
-
-> This documentation preview uses a nonfunctional mock QR code. It contains no
-> real account or session data. The actual page is available only locally at
+> The QR code is only a preview. It cannot log in and contains no real account
+> data. The actual page is available only at
 > `http://127.0.0.1:18060/login`.
 
-This project is an unofficial modified fork of
-[`xpzouying/xiaohongshu-mcp`](https://github.com/xpzouying/xiaohongshu-mcp).
-See [NOTICE](NOTICE) and [docs/upstream.md](docs/upstream.md).
-
-## Features
-
-- Six positively registered read-only MCP tools.
-- Server-wide MCP instructions for compatible AI agents.
-- Separate Xiaohongshu and RedNote URLs, cookies, and browser identity seeds.
-- QR login in Copilot CLI or at `http://127.0.0.1:18060/login`.
-- Fresh-browser verification before login is reported as successful.
-- One browser operation at a time, with cooldown and random jitter.
-- One reusable browser process with a fresh page per read operation.
-- Server-side operation deadlines, fail-fast stuck-operation handling, and MCP
-  progress notifications.
-- `/health` visibility into active work, queue depth, deadlines, and browser
-  runtime state.
-- Comment and reply limits with forced slow scrolling.
-- Loopback-only listening, local Host/Origin checks, and JSON-only POSTs.
-- Linux ARM64 fallback to an installed Chromium or Playwright Chromium.
-
-## Requirements
-
-- Go 1.25.12 or later.
-- A supported bundled browser platform, or a local Chromium-compatible browser.
-- A local Streamable HTTP MCP client such as GitHub Copilot CLI, Claude Code,
-  Codex CLI, or Cursor.
-- A dedicated Xiaohongshu or RedNote account is strongly recommended.
-
-Bundled browser builds currently cover Linux AMD64, macOS ARM64, and Windows
-AMD64. Other platforms must provide Chromium through `XHS_BROWSER_BIN`, the
-system `PATH`, or an existing Playwright Chromium installation.
-
-On supported platforms, startup first tries a bundled CloakBrowser archive from
-`cdn.one-world.ai`, inherited from upstream and checked against repository-
-pinned SHA256 hashes. If that download is unavailable, startup falls back to
-system Chromium and then Playwright Chromium. Set `XHS_BROWSER_BIN` to always
-use a browser you manage locally.
-
 ## Quick start
+
+Requires Go 1.25.12 or later. A dedicated test account is recommended.
 
 On Linux with a systemd user session:
 
 ```bash
 git clone https://github.com/sinmentis/xiaohongshu-mcp-readonly.git
 cd xiaohongshu-mcp-readonly
-
 ./scripts/setup-local --site rednote --agent copilot
 ```
 
 Use `--site rednote` for overseas RedNote accounts and `--site xiaohongshu` for
-mainland Xiaohongshu accounts.
+mainland Xiaohongshu accounts. `--agent` also accepts `claude`, `codex`, or
+`none`. The script builds, installs, starts, and registers the server when
+requested.
 
-Replace `copilot` with `claude`, `codex`, or `none`. The script builds,
-installs, starts, and optionally registers the server. No separate agent prompt
-is required because compatible MCP clients receive the server instructions
-during initialization.
-
-Open the local login page:
+Then open:
 
 ```text
 http://127.0.0.1:18060/login
 ```
 
-Inside Copilot CLI, run `/mcp`, then ask:
+In Copilot CLI, run `/mcp`, then ask:
 
 ```text
 Use xiaohongshu-readonly to check whether I am logged in.
 ```
 
+The server selects a bundled browser, system Chromium, or Playwright Chromium.
+Set `XHS_BROWSER_BIN` to use only a browser you manage. Bundled browser
+downloads are checked against repository-pinned SHA256 hashes.
+
 ## MCP tools
 
 | Tool | Purpose |
 | --- | --- |
-| `check_login_status` | Check the current site session. |
-| `get_login_qrcode` | Get the current login or device-verification QR code. |
+| `check_login_status` | Check the current account session. |
+| `get_login_qrcode` | Get the login or device-verification QR code. |
 | `list_feeds` | Read the home feed. |
 | `search_feeds` | Search public notes. |
 | `get_feed_detail` | Read a note, media metadata, and comments. |
-| `user_profile` | Read a public user profile and visible notes. |
+| `user_profile` | Read a public profile and visible notes. |
 
-The MCP and HTTP surfaces are both tested against explicit allowlists.
+## Runtime behavior
 
-## Access protection
+- Browser operations run through a queue and wait for at most one minute.
+- Completed operations are separated by at least 30 seconds plus brief jitter.
+- Every operation has a server deadline and returns an error instead of waiting
+  forever.
+- Comment reads are capped and deliberately slow, so this is not a bulk
+  collection tool.
+- For current status, run `curl http://127.0.0.1:18060/health`.
 
-Default browser access is deliberately slow:
+More documentation:
+[Copilot CLI](docs/copilot-cli.md) ·
+[other AI agents](docs/ai-agents.md) ·
+[troubleshooting](docs/troubleshooting.md) ·
+[HTTP interface](docs/api.md) ·
+[architecture](docs/architecture.md) ·
+[security model](docs/security-model.md) ·
+[contributing](CONTRIBUTING.md)
 
-- one operation at a time;
-- at most 1 minute waiting for another operation to release the browser;
-- at least 30 seconds between completed operations;
-- up to 15 seconds of additional random delay;
-- at most 50 top-level comments per request;
-- reply expansion limited to threads with at most 10 replies;
-- slow comment scrolling only.
+## Security and attribution
 
-These controls reduce accidental bursts. They cannot guarantee that an account
-will never be challenged or restricted. Avoid unattended bulk collection.
-
-The first browser-backed call starts Chromium. Later read calls reuse that
-process and open a fresh page, avoiding a full browser launch on every tool
-call. Each tool also has a server-side deadline. A timed-out operation returns
-an explicit error, marks `/health` as degraded while cleanup continues, and
-prevents queued calls from waiting behind work that is already stuck.
-
-## Documentation
-
-- [Copilot CLI setup](docs/copilot-cli.md)
-- [Other AI agents](docs/ai-agents.md)
-- [HTTP interface](docs/api.md)
-- [Architecture](docs/architecture.md)
-- [Security model](docs/security-model.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Maintenance and releases](docs/maintenance.md)
-- [Upstream relationship](docs/upstream.md)
-
-## Development
-
-```bash
-go fmt ./...
-go vet ./...
-go test ./...
-go test ./... -race
-```
-
-Browser integration tests use the `integration` build tag and are compiled,
-but not run, in CI.
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
-
-## Security and privacy
-
-Cookie files contain full account sessions and are stored with mode `0600`.
-Treat them like passwords. The server intentionally refuses non-loopback
-listeners and cross-origin browser requests, but local processes running as the
-same user remain inside the trust boundary.
-
-Report vulnerabilities privately through
+Cookie files contain full account sessions. Treat them like passwords and do
+not upload, share, or log them. The server listens only on loopback and checks
+Host, Origin, and JSON POST requests, but local processes running as the same
+user remain inside the trust boundary. Report vulnerabilities privately through
 [GitHub Security Advisories](https://github.com/sinmentis/xiaohongshu-mcp-readonly/security/advisories/new).
-See [SECURITY.md](SECURITY.md).
 
-## Disclaimer
+This is an unofficial modified fork of
+[`xpzouying/xiaohongshu-mcp`](https://github.com/xpzouying/xiaohongshu-mcp).
+It is not affiliated with Xiaohongshu, RedNote, or their operators. Users are
+responsible for account safety, data handling, access frequency, and compliance.
 
-This project is not affiliated with Xiaohongshu, RedNote, or their operators.
-Those names are third-party trademarks used only to describe compatibility.
-Automated access may be restricted by platform terms or local law. Users are
-responsible for their accounts, data handling, access frequency, and compliance.
-
-## License
-
-Apache License 2.0. The original license and attribution are preserved in
-[LICENSE](LICENSE) and [NOTICE](NOTICE).
+Licensed under Apache License 2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and
+[docs/upstream.md](docs/upstream.md) for licensing and attribution.
