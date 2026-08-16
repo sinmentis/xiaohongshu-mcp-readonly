@@ -16,4 +16,5 @@ All notable changes are documented here.
   and detailed health reporting.
 - Add typed MCP outputs, stable recovery errors, token-free source URLs, and
   normalized search filters.
+- Require Go 1.25.13 to include the latest standard-library security fixes.
 - Remove unused upstream mutation implementations and dead handlers.

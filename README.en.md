@@ -23,7 +23,7 @@ Cursor to search public notes, read comments, and view user profiles.
 
 ## Quick start
 
-Requires Go 1.25.12 or later. A dedicated test account is recommended.
+Requires Go 1.25.13 or later. A dedicated test account is recommended.
 
 On Linux with a systemd user session:
 

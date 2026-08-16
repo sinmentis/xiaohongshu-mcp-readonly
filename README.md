@@ -21,7 +21,7 @@ GitHub Copilot CLI、Claude Code、Codex CLI 和 Cursor，用 AI Agent 搜索公
 
 ## 快速开始
 
-需要 Go 1.25.12 或更高版本。建议使用专门的测试账号。
+需要 Go 1.25.13 或更高版本。建议使用专门的测试账号。
 
 Linux 上有 systemd 用户会话时：
 
