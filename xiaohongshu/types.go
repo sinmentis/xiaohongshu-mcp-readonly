@@ -9,6 +9,7 @@ type FeedsValue struct {
 type Feed struct {
 	XsecToken string   `json:"xsecToken"`
 	ID        string   `json:"id"`
+	SourceURL string   `json:"sourceUrl,omitempty"`
 	ModelType string   `json:"modelType"`
 	NoteCard  NoteCard `json:"noteCard"`
 	Index     int      `json:"index"`
@@ -85,6 +86,7 @@ type FeedDetailResponse struct {
 type FeedDetail struct {
 	NoteID       string            `json:"noteId"`
 	XsecToken    string            `json:"xsecToken"`
+	SourceURL    string            `json:"sourceUrl,omitempty"`
 	Title        string            `json:"title"`
 	Desc         string            `json:"desc"`
 	Type         string            `json:"type"`

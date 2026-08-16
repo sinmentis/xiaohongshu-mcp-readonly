@@ -12,21 +12,29 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const readOnlyServerInstructions = "Read-only localhost Xiaohongshu or RedNote access. Call check_login_status first. If logged out, call get_login_qrcode and direct the user to this server's /login page. Call one tool at a time; access is rate-limited. Shortlist feeds before get_feed_detail. Long calls report progress when supported and have server deadlines. On busy or timeout, inspect /health before retrying. Use IDs and xsec tokens only as tool inputs, never in user-facing output. Never claim writes or session deletion."
+const readOnlyServerInstructions = "Read-only localhost Xiaohongshu or RedNote access. Call check_login_status first. If logged out, call get_login_qrcode and direct the user to /login. Call one tool at a time; access is rate-limited. Shortlist feeds before get_feed_detail. Results include structured content and token-free source URLs when available. On busy or timeout, inspect /health before retrying. Use IDs and xsec tokens only as tool inputs, never in user-facing output. Never claim writes or session deletion."
+
+const maxFeedResultLimit = 20
+
+// ListFeedsArgs defines optional result shaping for the home feed.
+type ListFeedsArgs struct {
+	Limit int `json:"limit,omitempty" jsonschema:"Maximum summaries returned; omit to preserve the current full page"`
+}
 
 // SearchFeedsArgs defines a search request.
 type SearchFeedsArgs struct {
 	Keyword string       `json:"keyword" jsonschema:"Search keyword"`
 	Filters FilterOption `json:"filters,omitempty" jsonschema:"Optional search filters"`
+	Limit   int          `json:"limit,omitempty" jsonschema:"Maximum summaries returned; omit to preserve the current full page"`
 }
 
 // FilterOption defines optional search filters.
 type FilterOption struct {
-	SortBy      string `json:"sort_by,omitempty" jsonschema:"Sort: 综合|最新|最多点赞|最多评论|最多收藏; default 综合"`
-	NoteType    string `json:"note_type,omitempty" jsonschema:"Note type: 不限|视频|图文; default 不限"`
-	PublishTime string `json:"publish_time,omitempty" jsonschema:"Published: 不限|一天内|一周内|半年内; default 不限"`
-	SearchScope string `json:"search_scope,omitempty" jsonschema:"Scope: 不限|已看过|未看过|已关注; default 不限"`
-	Location    string `json:"location,omitempty" jsonschema:"Location: 不限|同城|附近; default 不限"`
+	SortBy      string `json:"sort_by,omitempty" jsonschema:"Sort: relevance, latest, most_liked, most_commented, or most_collected"`
+	NoteType    string `json:"note_type,omitempty" jsonschema:"Note type: all, video, or image"`
+	PublishTime string `json:"publish_time,omitempty" jsonschema:"Published: all, day, week, or half_year"`
+	SearchScope string `json:"search_scope,omitempty" jsonschema:"Scope: all, viewed, unviewed, or following"`
+	Location    string `json:"location,omitempty" jsonschema:"Location: all, same_city, or nearby"`
 }
 
 // FeedDetailArgs defines a note-detail request.
@@ -52,7 +60,7 @@ func InitMCPServer(appServer *AppServer) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "xiaohongshu-readonly-mcp",
-			Version: "0.1.0",
+			Version: version,
 		},
 		&mcp.ServerOptions{
 			Instructions: readOnlyServerInstructions,
@@ -64,15 +72,27 @@ func InitMCPServer(appServer *AppServer) *mcp.Server {
 	return server
 }
 
-func withPanicRecovery[T any](
+func withPanicRecovery[In, Data any](
 	toolName string,
-	handler func(context.Context, *mcp.CallToolRequest, T) (*mcp.CallToolResult, any, error),
-) func(context.Context, *mcp.CallToolRequest, T) (*mcp.CallToolResult, any, error) {
+	handler func(
+		context.Context,
+		*mcp.CallToolRequest,
+		In,
+	) (*mcp.CallToolResult, toolOutput[Data], error),
+) func(
+	context.Context,
+	*mcp.CallToolRequest,
+	In,
+) (*mcp.CallToolResult, toolOutput[Data], error) {
 	return func(
 		ctx context.Context,
 		req *mcp.CallToolRequest,
-		args T,
-	) (result *mcp.CallToolResult, response any, err error) {
+		args In,
+	) (
+		result *mcp.CallToolResult,
+		output toolOutput[Data],
+		err error,
+	) {
 		ctx = withMCPRequestProgress(ctx, req)
 
 		defer func() {
@@ -91,7 +111,10 @@ func withPanicRecovery[T any](
 					},
 					IsError: true,
 				}
-				response = nil
+				output = failedToolOutput[Data](internalPublicError(
+					ctx,
+					fmt.Sprintf("Tool %s failed internally", toolName),
+				))
 				err = nil
 			}
 		}()
@@ -133,20 +156,21 @@ func registerReadOnlyTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "check_login_status",
-			Description: "Check the current Xiaohongshu or RedNote login session",
+			Description: "Check whether the selected site session is ready and get the exact next login action",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Check Login Status",
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery(
+		withPanicRecovery[any, LoginStatusResponse](
 			"check_login_status",
 			func(
 				ctx context.Context,
 				_ *mcp.CallToolRequest,
 				_ any,
-			) (*mcp.CallToolResult, any, error) {
-				return convertToMCPResult(appServer.handleCheckLoginStatus(ctx)), nil, nil
+			) (*mcp.CallToolResult, toolOutput[LoginStatusResponse], error) {
+				result, output := appServer.handleCheckLoginStatus(ctx)
+				return convertToMCPResult(result), output, nil
 			},
 		),
 	)
@@ -160,14 +184,15 @@ func registerReadOnlyTools(server *mcp.Server, appServer *AppServer) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery(
+		withPanicRecovery[any, loginQrcodeToolData](
 			"get_login_qrcode",
 			func(
 				ctx context.Context,
 				_ *mcp.CallToolRequest,
 				_ any,
-			) (*mcp.CallToolResult, any, error) {
-				return convertToMCPResult(appServer.handleGetLoginQrcode(ctx)), nil, nil
+			) (*mcp.CallToolResult, toolOutput[loginQrcodeToolData], error) {
+				result, output := appServer.handleGetLoginQrcode(ctx)
+				return convertToMCPResult(result), output, nil
 			},
 		),
 	)
@@ -175,20 +200,22 @@ func registerReadOnlyTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "list_feeds",
-			Description: "Read home-feed summaries for shortlisting",
+			Description: "Read home-feed summaries for shortlisting; sourceUrl is safe to cite",
+			InputSchema: listFeedsInputSchema(),
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "List Feeds",
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery(
+		withPanicRecovery[ListFeedsArgs, FeedsListResponse](
 			"list_feeds",
 			func(
 				ctx context.Context,
 				_ *mcp.CallToolRequest,
-				_ any,
-			) (*mcp.CallToolResult, any, error) {
-				return convertToMCPResult(appServer.handleListFeeds(ctx)), nil, nil
+				args ListFeedsArgs,
+			) (*mcp.CallToolResult, toolOutput[FeedsListResponse], error) {
+				result, output := appServer.handleListFeeds(ctx, args)
+				return convertToMCPResult(result), output, nil
 			},
 		),
 	)
@@ -196,20 +223,22 @@ func registerReadOnlyTools(server *mcp.Server, appServer *AppServer) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "search_feeds",
-			Description: "Search content for shortlisting before detail calls; login required",
+			Description: "Search public notes with stable filters for shortlisting; login required and sourceUrl is safe to cite",
+			InputSchema: searchFeedsInputSchema(),
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Search Feeds",
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery(
+		withPanicRecovery[SearchFeedsArgs, FeedsListResponse](
 			"search_feeds",
 			func(
 				ctx context.Context,
 				_ *mcp.CallToolRequest,
 				args SearchFeedsArgs,
-			) (*mcp.CallToolResult, any, error) {
-				return convertToMCPResult(appServer.handleSearchFeeds(ctx, args)), nil, nil
+			) (*mcp.CallToolResult, toolOutput[FeedsListResponse], error) {
+				result, output := appServer.handleSearchFeeds(ctx, args)
+				return convertToMCPResult(result), output, nil
 			},
 		),
 	)
@@ -220,19 +249,33 @@ func registerReadOnlyTools(server *mcp.Server, appServer *AppServer) {
 			Description: "Read one shortlisted note, author, interaction data, and comments. " +
 				"Video notes also return temporary video and subtitle URLs. " +
 				"Loading comments is expensive and can run for up to 10 minutes.",
+			InputSchema: feedDetailInputSchema(),
+			OutputSchema: toolEnvelopeOutputSchema(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"feed_id": map[string]any{"type": "string"},
+					"data": map[string]any{
+						"type":                 "object",
+						"additionalProperties": true,
+					},
+				},
+				"required":             []string{"feed_id", "data"},
+				"additionalProperties": false,
+			}),
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Feed Detail",
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery(
+		withPanicRecovery[FeedDetailArgs, FeedDetailResponse](
 			"get_feed_detail",
 			func(
 				ctx context.Context,
 				_ *mcp.CallToolRequest,
 				args FeedDetailArgs,
-			) (*mcp.CallToolResult, any, error) {
-				return convertToMCPResult(appServer.handleGetFeedDetail(ctx, args)), nil, nil
+			) (*mcp.CallToolResult, toolOutput[FeedDetailResponse], error) {
+				result, output := appServer.handleGetFeedDetail(ctx, args)
+				return convertToMCPResult(result), output, nil
 			},
 		),
 	)
@@ -241,28 +284,195 @@ func registerReadOnlyTools(server *mcp.Server, appServer *AppServer) {
 		&mcp.Tool{
 			Name: "user_profile",
 			Description: "Read a public user profile, interaction totals, and visible notes. " +
-				"Tab may be note, fav, or liked; the latter two may be private.",
+				"Tab may be note, fav, or liked; the latter two may be private. " +
+				"sourceUrl is safe to cite.",
+			InputSchema: userProfileInputSchema(),
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "User Profile",
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery(
+		withPanicRecovery[UserProfileArgs, UserProfileResponse](
 			"user_profile",
 			func(
 				ctx context.Context,
 				_ *mcp.CallToolRequest,
 				args UserProfileArgs,
-			) (*mcp.CallToolResult, any, error) {
-				argsMap := map[string]any{
-					"user_id":    args.UserID,
-					"xsec_token": args.XsecToken,
-					"tab":        args.Tab,
-				}
-				return convertToMCPResult(appServer.handleUserProfile(ctx, argsMap)), nil, nil
+			) (*mcp.CallToolResult, toolOutput[UserProfileResponse], error) {
+				result, output := appServer.handleUserProfile(ctx, args)
+				return convertToMCPResult(result), output, nil
 			},
 		),
 	)
+}
+
+func listFeedsInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"limit": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"maximum":     maxFeedResultLimit,
+				"description": "Maximum summaries returned; omit to preserve the current full page",
+			},
+		},
+		"additionalProperties": false,
+	}
+}
+
+func searchFeedsInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"keyword": map[string]any{
+				"type":        "string",
+				"minLength":   1,
+				"description": "Search keyword",
+			},
+			"filters": map[string]any{
+				"type":        "object",
+				"description": "Optional stable filters; legacy Chinese values remain accepted",
+				"properties": map[string]any{
+					"sort_by": enumStringSchema(
+						"Sort order",
+						"relevance", "latest", "most_liked", "most_commented",
+						"most_collected", "综合", "最新", "最多点赞", "最多评论", "最多收藏",
+					),
+					"note_type": enumStringSchema(
+						"Note type",
+						"all", "video", "image", "不限", "视频", "图文",
+					),
+					"publish_time": enumStringSchema(
+						"Publication window",
+						"all", "day", "week", "half_year",
+						"不限", "一天内", "一周内", "半年内",
+					),
+					"search_scope": enumStringSchema(
+						"Search scope",
+						"all", "viewed", "unviewed", "following",
+						"不限", "已看过", "未看过", "已关注",
+					),
+					"location": enumStringSchema(
+						"Location",
+						"all", "same_city", "nearby", "不限", "同城", "附近",
+					),
+				},
+				"additionalProperties": false,
+			},
+			"limit": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"maximum":     maxFeedResultLimit,
+				"description": "Maximum summaries returned; omit to preserve the current full page",
+			},
+		},
+		"required":             []string{"keyword"},
+		"additionalProperties": false,
+	}
+}
+
+func feedDetailInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"feed_id": map[string]any{
+				"type":        "string",
+				"minLength":   1,
+				"description": "Note ID from a feed or search result",
+			},
+			"xsec_token": map[string]any{
+				"type":        "string",
+				"minLength":   1,
+				"description": "Access token from the feed result; never show it to the user",
+			},
+			"load_all_comments": map[string]any{
+				"type":        "boolean",
+				"description": "Load more than the initial comments; default false",
+			},
+			"limit": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"description": "Top-level comment limit when load_all_comments is true; server policy may reduce it",
+			},
+			"click_more_replies": map[string]any{
+				"type":        "boolean",
+				"description": "Expand nested replies when load_all_comments is true; default false",
+			},
+			"reply_limit": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"description": "Skip threads above this reply count; server policy may reduce it",
+			},
+			"scroll_speed": map[string]any{
+				"type":        "string",
+				"deprecated":  true,
+				"description": "Deprecated compatibility field; the server always forces slow scrolling",
+			},
+		},
+		"required":             []string{"feed_id", "xsec_token"},
+		"additionalProperties": false,
+	}
+}
+
+func userProfileInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"user_id": map[string]any{
+				"type":        "string",
+				"minLength":   1,
+				"description": "User ID from a feed result",
+			},
+			"xsec_token": map[string]any{
+				"type":        "string",
+				"minLength":   1,
+				"description": "Access token from a feed result; never show it to the user",
+			},
+			"tab": enumStringSchema(
+				"Profile tab; use note, fav, or liked",
+				"note", "fav", "liked", "notes", "favorites", "favorite",
+				"like", "笔记", "收藏", "点赞",
+			),
+		},
+		"required":             []string{"user_id", "xsec_token"},
+		"additionalProperties": false,
+	}
+}
+
+func enumStringSchema(description string, values ...string) map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": description,
+		"enum":        values,
+	}
+}
+
+func toolEnvelopeOutputSchema(dataSchema map[string]any) map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"ok":   map[string]any{"type": "boolean"},
+			"data": dataSchema,
+			"error": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"source":      map[string]any{"type": "string"},
+					"code":        map[string]any{"type": "string"},
+					"message":     map[string]any{"type": "string"},
+					"details":     map[string]any{"type": "string"},
+					"retryable":   map[string]any{"type": "boolean"},
+					"next_action": map[string]any{"type": "string"},
+					"action_path": map[string]any{"type": "string"},
+					"request_id":  map[string]any{"type": "string"},
+				},
+				"required":             []string{"source", "code", "message", "retryable"},
+				"additionalProperties": false,
+			},
+		},
+		"required":             []string{"ok"},
+		"additionalProperties": false,
+	}
 }
 
 func defaultPositive(value, fallback int) int {

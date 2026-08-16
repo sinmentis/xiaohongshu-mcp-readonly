@@ -14,4 +14,6 @@ All notable changes are documented here.
 - Reuse one browser process across read operations.
 - Add server-side deadlines, MCP progress, stuck-operation fail-fast behavior,
   and detailed health reporting.
+- Add typed MCP outputs, stable recovery errors, token-free source URLs, and
+  normalized search filters.
 - Remove unused upstream mutation implementations and dead handlers.

@@ -28,13 +28,19 @@ Error:
 
 ```json
 {
-  "error": "...",
-  "code": "ERROR_CODE"
+  "error": "Browser operation timed out",
+  "code": "OPERATION_TIMEOUT",
+  "details": "search_feeds timed out after 2m0s...",
+  "source": "server",
+  "retryable": true,
+  "next_action": "inspect_health",
+  "action_path": "/health",
+  "request_id": "req-42"
 }
 ```
 
 Every response includes an `X-Request-ID` header that also appears in server
-logs.
+logs. Error responses repeat it in `request_id`.
 
 ## Endpoints
 
@@ -59,6 +65,11 @@ the request stream. MCP clients should send:
 Accept: application/json, text/event-stream
 ```
 
+Every MCP tool declares an output schema and returns `structuredContent`.
+Text and image content remain available for clients that do not yet consume
+structured results. Tool errors use the same stable codes and recovery actions
+as the HTTP interface.
+
 ## Health
 
 `GET /health` returns `200` for `healthy` and normally busy states. It returns
@@ -70,6 +81,8 @@ Accept: application/json, text/event-stream
   "data": {
     "status": "busy",
     "service": "xiaohongshu-mcp-readonly",
+    "version": "<build-version>",
+    "site": "rednote",
     "access": {
       "state": "busy",
       "operation_id": 12,
@@ -78,6 +91,13 @@ Accept: application/json, text/event-stream
       "elapsed": "42s",
       "remaining": "9m18s",
       "queued": 0
+    },
+    "policy": {
+      "min_interval": "30s",
+      "max_jitter": "15s",
+      "max_queue_wait": "1m0s",
+      "max_comments": 50,
+      "max_replies": 10
     },
     "browser": {
       "state": "ready",
@@ -106,14 +126,30 @@ Content-Type: application/json
 {
   "keyword": "Wellington coffee",
   "filters": {
-    "sort_by": "最新",
-    "note_type": "不限",
-    "publish_time": "一周内",
-    "search_scope": "不限",
-    "location": "不限"
+    "sort_by": "latest",
+    "note_type": "all",
+    "publish_time": "week",
+    "search_scope": "all",
+    "location": "all"
   }
 }
 ```
+
+Stable filter values are:
+
+- `sort_by`: `relevance`, `latest`, `most_liked`, `most_commented`,
+  `most_collected`;
+- `note_type`: `all`, `video`, `image`;
+- `publish_time`: `all`, `day`, `week`, `half_year`;
+- `search_scope`: `all`, `viewed`, `unviewed`, `following`;
+- `location`: `all`, `same_city`, `nearby`.
+
+Legacy Chinese values remain accepted for compatibility. MCP callers may also
+set `limit` from 1 to 20 on `list_feeds` and `search_feeds`; omitting it
+preserves the full current-page result.
+
+Feed summaries and details include a token-free `sourceUrl`. Use that URL for
+citations. Keep `xsecToken` only for subsequent tool inputs.
 
 ## Feed detail
 
@@ -154,3 +190,4 @@ Content-Type: application/json
 ```
 
 Valid tabs are `note`, `fav`, and `liked`. The latter two may be private.
+The response includes a token-free `sourceUrl` for the public profile.

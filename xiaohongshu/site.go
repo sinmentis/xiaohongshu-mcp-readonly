@@ -72,3 +72,17 @@ func (s SiteConfig) MatchesURL(rawURL string) bool {
 	}
 	return actual.Scheme == base.Scheme && actual.Hostname() == base.Hostname()
 }
+
+func FeedSourceURL(feedID string) string {
+	if feedID == "" {
+		return ""
+	}
+	return Site().Base + "/explore/" + url.PathEscape(feedID)
+}
+
+func UserSourceURL(userID string) string {
+	if userID == "" {
+		return ""
+	}
+	return Site().Base + "/user/profile/" + url.PathEscape(userID)
+}

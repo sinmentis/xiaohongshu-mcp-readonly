@@ -81,6 +81,10 @@ The client timeout is only a transport ceiling. The server applies shorter
 tool-specific deadlines, reports MCP progress when the client supplies a
 progress token, and returns an error instead of waiting indefinitely.
 
+Tool results include typed structured content. Search and feed results expose a
+token-free `sourceUrl` for citations, while IDs and xsec tokens remain inputs
+for follow-up tool calls only.
+
 Example prompts:
 
 ```text

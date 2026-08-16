@@ -15,6 +15,9 @@ The composition roots are:
 Both use positive allowlists. A new upstream action is not exposed unless it is
 explicitly added and reviewed.
 
+MCP tools keep text fallbacks but also declare output schemas and return typed
+`structuredContent`. The six-tool interface remains unchanged.
+
 ## Request path
 
 ```text
@@ -45,6 +48,17 @@ Xiaohongshu or RedNote
 ```
 
 ## Deep modules
+
+### Public contract
+
+`public_contract.go` classifies internal failures once for both HTTP and MCP.
+It exposes stable error codes, retry guidance, local action paths, and request
+IDs without leaking credentials or full queries. Login responses similarly
+state whether reads are ready and the exact next action.
+
+`mcp_server.go` owns the Agent-facing schemas. Stable English search values are
+mapped inside `xiaohongshu/search.go` to the selected site's localized labels,
+so callers do not need to understand the page implementation.
 
 ### Access gate
 

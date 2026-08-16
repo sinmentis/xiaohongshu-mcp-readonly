@@ -11,18 +11,31 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func (s *AppServer) handleCheckLoginStatus(ctx context.Context) *MCPToolResult {
+type loginQrcodeToolData struct {
+	Timeout    string                 `json:"timeout"`
+	ExpiresAt  string                 `json:"expires_at,omitempty"`
+	Active     bool                   `json:"active"`
+	IsLoggedIn bool                   `json:"is_logged_in"`
+	Stage      xiaohongshu.LoginStage `json:"stage"`
+	Site       string                 `json:"site"`
+	HasQRCode  bool                   `json:"has_qr_code"`
+	NextAction string                 `json:"next_action"`
+	ActionPath string                 `json:"action_path,omitempty"`
+}
+
+func (s *AppServer) handleCheckLoginStatus(
+	ctx context.Context,
+) (*MCPToolResult, toolOutput[LoginStatusResponse]) {
 	logrus.Info("MCP: 检查登录状态")
 
 	status, err := s.xiaohongshuService.CheckLoginStatus(ctx)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "Failed to check login status: " + safeErrorText(err),
-			}},
-			IsError: true,
-		}
+		return mcpServiceFailure[LoginStatusResponse](
+			ctx,
+			"STATUS_CHECK_FAILED",
+			"Failed to check login status",
+			err,
+		)
 	}
 
 	return &MCPToolResult{
@@ -30,7 +43,7 @@ func (s *AppServer) handleCheckLoginStatus(ctx context.Context) *MCPToolResult {
 			Type: "text",
 			Text: loginStatusText(status),
 		}},
-	}
+	}, successfulToolOutput(*status)
 }
 
 func loginStatusText(status *LoginStatusResponse) string {
@@ -58,32 +71,40 @@ func loginStatusText(status *LoginStatusResponse) string {
 	}
 }
 
-func (s *AppServer) handleGetLoginQrcode(ctx context.Context) *MCPToolResult {
+func (s *AppServer) handleGetLoginQrcode(
+	ctx context.Context,
+) (*MCPToolResult, toolOutput[loginQrcodeToolData]) {
 	logrus.Info("MCP: 获取登录扫码图片")
 
 	result, err := s.xiaohongshuService.GetLoginQrcode(ctx)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "Failed to get login QR code: " + safeErrorText(err)}},
-			IsError: true,
-		}
+		return mcpServiceFailure[loginQrcodeToolData](
+			ctx,
+			"LOGIN_SESSION_FAILED",
+			"Failed to get login QR code",
+			err,
+		)
+	}
+
+	data := loginQrcodeToolData{
+		Timeout:    result.Timeout,
+		ExpiresAt:  result.ExpiresAt,
+		Active:     result.Active,
+		IsLoggedIn: result.IsLoggedIn,
+		Stage:      result.Stage,
+		Site:       result.Site,
+		HasQRCode:  result.HasQRCode,
+		NextAction: result.NextAction,
+		ActionPath: result.ActionPath,
 	}
 
 	if result.IsLoggedIn {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "Already logged in."}},
-		}
+		}, successfulToolOutput(data)
 	}
 
-	now := time.Now()
-	deadline := func() string {
-		d, err := time.ParseDuration(result.Timeout)
-		if err != nil {
-			return now.Format("2006-01-02 15:04:05")
-		}
-		return now.Add(d).Format("2006-01-02 15:04:05")
-	}()
-
+	deadline := loginDeadlineText(result)
 	message := "Scan this login QR code in the selected app before " + deadline + "."
 	switch result.Stage {
 	case xiaohongshu.LoginStageDeviceVerification:
@@ -106,53 +127,58 @@ func (s *AppServer) handleGetLoginQrcode(ctx context.Context) *MCPToolResult {
 			Data:     strings.TrimPrefix(result.Img, "data:image/png;base64,"),
 		})
 	}
-	return &MCPToolResult{Content: contents}
+	return &MCPToolResult{Content: contents}, successfulToolOutput(data)
 }
 
-func (s *AppServer) handleListFeeds(ctx context.Context) *MCPToolResult {
+func loginDeadlineText(result *LoginQrcodeResponse) string {
+	if result.ExpiresAt != "" {
+		if deadline, err := time.Parse(time.RFC3339, result.ExpiresAt); err == nil {
+			return deadline.Local().Format("2006-01-02 15:04:05")
+		}
+	}
+
+	now := time.Now()
+	duration, err := time.ParseDuration(result.Timeout)
+	if err != nil {
+		return now.Format("2006-01-02 15:04:05")
+	}
+	return now.Add(duration).Format("2006-01-02 15:04:05")
+}
+
+func (s *AppServer) handleListFeeds(
+	ctx context.Context,
+	args ListFeedsArgs,
+) (*MCPToolResult, toolOutput[FeedsListResponse]) {
 	logrus.Info("MCP: 获取Feeds列表")
 
 	result, err := s.xiaohongshuService.ListFeeds(ctx)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "Failed to list feeds: " + safeErrorText(err),
-			}},
-			IsError: true,
-		}
+		return mcpServiceFailure[FeedsListResponse](
+			ctx,
+			"LIST_FEEDS_FAILED",
+			"Failed to list feeds",
+			err,
+		)
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: fmt.Sprintf("Feeds were loaded but could not be encoded: %v", err),
-			}},
-			IsError: true,
-		}
-	}
-
-	return &MCPToolResult{
-		Content: []MCPContent{{
-			Type: "text",
-			Text: string(jsonData),
-		}},
-	}
+	return mcpJSONSuccess(
+		ctx,
+		*limitFeedsResponse(result, args.Limit),
+		"Feeds were loaded but could not be encoded",
+	)
 }
 
-func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs) *MCPToolResult {
+func (s *AppServer) handleSearchFeeds(
+	ctx context.Context,
+	args SearchFeedsArgs,
+) (*MCPToolResult, toolOutput[FeedsListResponse]) {
 	logrus.Info("MCP: 搜索Feeds")
 
-	if args.Keyword == "" {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "Search failed: keyword is required.",
-			}},
-			IsError: true,
-		}
+	if strings.TrimSpace(args.Keyword) == "" {
+		return mcpInputFailure[FeedsListResponse](
+			ctx,
+			"keyword is required",
+		)
 	}
 
 	filter := xiaohongshu.FilterOption{
@@ -165,55 +191,32 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 
 	result, err := s.xiaohongshuService.SearchFeeds(ctx, args.Keyword, filter)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "Search failed: " + safeErrorText(err),
-			}},
-			IsError: true,
-		}
+		return mcpServiceFailure[FeedsListResponse](
+			ctx,
+			"SEARCH_FEEDS_FAILED",
+			"Search failed",
+			err,
+		)
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: fmt.Sprintf("Search completed but the result could not be encoded: %v", err),
-			}},
-			IsError: true,
-		}
-	}
-
-	return &MCPToolResult{
-		Content: []MCPContent{{
-			Type: "text",
-			Text: string(jsonData),
-		}},
-	}
+	return mcpJSONSuccess(
+		ctx,
+		*limitFeedsResponse(result, args.Limit),
+		"Search completed but the result could not be encoded",
+	)
 }
 
-func (s *AppServer) handleGetFeedDetail(ctx context.Context, args FeedDetailArgs) *MCPToolResult {
+func (s *AppServer) handleGetFeedDetail(
+	ctx context.Context,
+	args FeedDetailArgs,
+) (*MCPToolResult, toolOutput[FeedDetailResponse]) {
 	logrus.Info("MCP: 获取Feed详情")
 
 	if args.FeedID == "" {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "Feed detail failed: feed_id is required.",
-			}},
-			IsError: true,
-		}
+		return mcpInputFailure[FeedDetailResponse](ctx, "feed_id is required")
 	}
-
 	if args.XsecToken == "" {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "Feed detail failed: xsec_token is required.",
-			}},
-			IsError: true,
-		}
+		return mcpInputFailure[FeedDetailResponse](ctx, "xsec_token is required")
 	}
 
 	config := xiaohongshu.DefaultCommentLoadConfig()
@@ -234,81 +237,85 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args FeedDetailArgs
 		config,
 	)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "Feed detail failed: " + safeErrorText(err),
-			}},
-			IsError: true,
-		}
+		return mcpServiceFailure[FeedDetailResponse](
+			ctx,
+			"GET_FEED_DETAIL_FAILED",
+			"Failed to load feed detail",
+			err,
+		)
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: fmt.Sprintf("Feed detail loaded but could not be encoded: %v", err),
-			}},
-			IsError: true,
-		}
-	}
-
-	return &MCPToolResult{
-		Content: []MCPContent{{
-			Type: "text",
-			Text: string(jsonData),
-		}},
-	}
+	return mcpJSONSuccess(
+		ctx,
+		*result,
+		"Feed detail loaded but could not be encoded",
+	)
 }
 
-func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) *MCPToolResult {
+func (s *AppServer) handleUserProfile(
+	ctx context.Context,
+	args UserProfileArgs,
+) (*MCPToolResult, toolOutput[UserProfileResponse]) {
 	logrus.Info("MCP: 获取用户主页")
 
-	userID, ok := args["user_id"].(string)
-	if !ok || userID == "" {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "User profile failed: user_id is required.",
-			}},
-			IsError: true,
-		}
+	if args.UserID == "" {
+		return mcpInputFailure[UserProfileResponse](ctx, "user_id is required")
+	}
+	if args.XsecToken == "" {
+		return mcpInputFailure[UserProfileResponse](ctx, "xsec_token is required")
 	}
 
-	xsecToken, ok := args["xsec_token"].(string)
-	if !ok || xsecToken == "" {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "User profile failed: xsec_token is required.",
-			}},
-			IsError: true,
-		}
-	}
-
-	tab, _ := args["tab"].(string)
-
-	result, err := s.xiaohongshuService.UserProfile(ctx, userID, xsecToken, tab)
+	result, err := s.xiaohongshuService.UserProfile(
+		ctx,
+		args.UserID,
+		args.XsecToken,
+		args.Tab,
+	)
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: "User profile failed: " + safeErrorText(err),
-			}},
-			IsError: true,
-		}
+		return mcpServiceFailure[UserProfileResponse](
+			ctx,
+			"GET_USER_PROFILE_FAILED",
+			"Failed to load user profile",
+			err,
+		)
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "  ")
+	return mcpJSONSuccess(
+		ctx,
+		*result,
+		"User profile loaded but could not be encoded",
+	)
+}
+
+func limitFeedsResponse(
+	result *FeedsListResponse,
+	limit int,
+) *FeedsListResponse {
+	if limit > maxFeedResultLimit {
+		limit = maxFeedResultLimit
+	}
+	if limit <= 0 || len(result.Feeds) <= limit {
+		return result
+	}
+
+	limited := *result
+	limited.TotalCount = len(result.Feeds)
+	limited.Feeds = append([]xiaohongshu.Feed(nil), result.Feeds[:limit]...)
+	limited.Count = len(limited.Feeds)
+	limited.HasMore = limited.Count < limited.TotalCount
+	return &limited
+}
+
+func mcpJSONSuccess[T any](
+	ctx context.Context,
+	data T,
+	encodingMessage string,
+) (*MCPToolResult, toolOutput[T]) {
+	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		return &MCPToolResult{
-			Content: []MCPContent{{
-				Type: "text",
-				Text: fmt.Sprintf("User profile loaded but could not be encoded: %v", err),
-			}},
-			IsError: true,
-		}
+		publicError := internalPublicError(ctx, encodingMessage)
+		publicError.Details = safeErrorText(err)
+		return mcpPublicFailure[T](publicError)
 	}
 
 	return &MCPToolResult{
@@ -316,5 +323,38 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 			Type: "text",
 			Text: string(jsonData),
 		}},
+	}, successfulToolOutput(data)
+}
+
+func mcpInputFailure[T any](
+	ctx context.Context,
+	message string,
+) (*MCPToolResult, toolOutput[T]) {
+	return mcpPublicFailure[T](invalidArgumentPublicError(ctx, message))
+}
+
+func mcpServiceFailure[T any](
+	ctx context.Context,
+	fallbackCode string,
+	fallbackMessage string,
+	err error,
+) (*MCPToolResult, toolOutput[T]) {
+	classified := classifyPublicError(ctx, fallbackCode, fallbackMessage, err)
+	return mcpPublicFailure[T](classified.Error)
+}
+
+func mcpPublicFailure[T any](
+	publicError PublicError,
+) (*MCPToolResult, toolOutput[T]) {
+	text := publicError.Message
+	if publicError.Details != "" {
+		text += ": " + publicError.Details
 	}
+	return &MCPToolResult{
+		Content: []MCPContent{{
+			Type: "text",
+			Text: text,
+		}},
+		IsError: true,
+	}, failedToolOutput[T](publicError)
 }

@@ -27,7 +27,11 @@ func ParseProfileTab(s string) (ProfileTab, error) {
 	case "liked", "like", "点赞":
 		return TabLiked, nil
 	}
-	return "", fmt.Errorf("未知的主页 tab %q，可选：note / fav / liked", s)
+	return "", &InvalidArgumentError{
+		Field:     "tab",
+		Value:     s,
+		Supported: []string{"note", "fav", "liked"},
+	}
 }
 
 type UserProfileAction struct {

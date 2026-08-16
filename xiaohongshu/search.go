@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -22,37 +21,61 @@ type SearchResult struct {
 }
 
 type FilterOption struct {
-	SortBy      string `json:"sort_by,omitempty" jsonschema:"排序依据: 综合|最新|最多点赞|最多评论|最多收藏,默认为'综合'"`
-	NoteType    string `json:"note_type,omitempty" jsonschema:"笔记类型: 不限|视频|图文,默认为'不限'"`
-	PublishTime string `json:"publish_time,omitempty" jsonschema:"发布时间: 不限|一天内|一周内|半年内,默认为'不限'"`
-	SearchScope string `json:"search_scope,omitempty" jsonschema:"搜索范围: 不限|已看过|未看过|已关注,默认为'不限'"`
-	Location    string `json:"location,omitempty" jsonschema:"位置距离: 不限|同城|附近,默认为'不限'"`
+	SortBy      string `json:"sort_by,omitempty" jsonschema:"Sort order using a stable value such as relevance or latest"`
+	NoteType    string `json:"note_type,omitempty" jsonschema:"Note type using all, video, or image"`
+	PublishTime string `json:"publish_time,omitempty" jsonschema:"Publication window using all, day, week, or half_year"`
+	SearchScope string `json:"search_scope,omitempty" jsonschema:"Search scope using all, viewed, unviewed, or following"`
+	Location    string `json:"location,omitempty" jsonschema:"Location using all, same_city, or nearby"`
 }
 
 // Text matching is required because duplicate tags make index-based selectors unstable.
 type filterGroup struct {
-	label        string
+	field        string
+	siteLabel    string
 	pick         func(FilterOption) string
 	defaultValue string
-	allowed      []string
+	canonical    []string
+	aliases      map[string]string
 }
 
 var filterGroups = []filterGroup{
-	{"排序依据", func(f FilterOption) string { return f.SortBy },
+	{"sort_by", "排序依据", func(f FilterOption) string { return f.SortBy },
 		"综合",
-		[]string{"综合", "最新", "最多点赞", "最多评论", "最多收藏"}},
-	{"笔记类型", func(f FilterOption) string { return f.NoteType },
+		[]string{"relevance", "latest", "most_liked", "most_commented", "most_collected"},
+		map[string]string{
+			"relevance": "综合", "latest": "最新", "most_liked": "最多点赞",
+			"most_commented": "最多评论", "most_collected": "最多收藏",
+			"综合": "综合", "最新": "最新", "最多点赞": "最多点赞",
+			"最多评论": "最多评论", "最多收藏": "最多收藏",
+		}},
+	{"note_type", "笔记类型", func(f FilterOption) string { return f.NoteType },
 		"不限",
-		[]string{"不限", "视频", "图文"}},
-	{"发布时间", func(f FilterOption) string { return f.PublishTime },
+		[]string{"all", "video", "image"},
+		map[string]string{
+			"all": "不限", "video": "视频", "image": "图文",
+			"不限": "不限", "视频": "视频", "图文": "图文",
+		}},
+	{"publish_time", "发布时间", func(f FilterOption) string { return f.PublishTime },
 		"不限",
-		[]string{"不限", "一天内", "一周内", "半年内"}},
-	{"搜索范围", func(f FilterOption) string { return f.SearchScope },
+		[]string{"all", "day", "week", "half_year"},
+		map[string]string{
+			"all": "不限", "day": "一天内", "week": "一周内", "half_year": "半年内",
+			"不限": "不限", "一天内": "一天内", "一周内": "一周内", "半年内": "半年内",
+		}},
+	{"search_scope", "搜索范围", func(f FilterOption) string { return f.SearchScope },
 		"不限",
-		[]string{"不限", "已看过", "未看过", "已关注"}},
-	{"位置距离", func(f FilterOption) string { return f.Location },
+		[]string{"all", "viewed", "unviewed", "following"},
+		map[string]string{
+			"all": "不限", "viewed": "已看过", "unviewed": "未看过", "following": "已关注",
+			"不限": "不限", "已看过": "已看过", "未看过": "未看过", "已关注": "已关注",
+		}},
+	{"location", "位置距离", func(f FilterOption) string { return f.Location },
 		"不限",
-		[]string{"不限", "同城", "附近"}},
+		[]string{"all", "same_city", "nearby"},
+		map[string]string{
+			"all": "不限", "same_city": "同城", "nearby": "附近",
+			"不限": "不限", "同城": "同城", "附近": "附近",
+		}},
 }
 
 type pendingFilter struct {
@@ -66,18 +89,25 @@ func collectFilters(filters []FilterOption) ([]pendingFilter, error) {
 
 	for _, f := range filters {
 		for _, g := range filterGroups {
-			value := g.pick(f)
+			value := strings.TrimSpace(g.pick(f))
 			if value == "" {
 				continue
 			}
-			if !slices.Contains(g.allowed, value) {
-				return nil, fmt.Errorf("%s 不支持 %q，可选：%s",
-					g.label, value, strings.Join(g.allowed, "、"))
+			siteValue, ok := g.aliases[value]
+			if !ok {
+				return nil, &InvalidArgumentError{
+					Field:     g.field,
+					Value:     value,
+					Supported: g.canonical,
+				}
 			}
-			if value == g.defaultValue {
+			if siteValue == g.defaultValue {
 				continue
 			}
-			pending = append(pending, pendingFilter{group: g.label, option: value})
+			pending = append(pending, pendingFilter{
+				group:  g.siteLabel,
+				option: siteValue,
+			})
 		}
 	}
 

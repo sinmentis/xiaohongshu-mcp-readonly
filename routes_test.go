@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/xiaohongshu"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -116,11 +117,15 @@ func TestMCPInitializeIncludesReadOnlyInstructions(t *testing.T) {
 	var result struct {
 		Result struct {
 			Instructions string `json:"instructions"`
+			ServerInfo   struct {
+				Version string `json:"version"`
+			} `json:"serverInfo"`
 		} `json:"result"`
 	}
 	decodeMCPResponse(t, response, &result)
 	assert.Equal(t, readOnlyServerInstructions, result.Result.Instructions)
 	assert.LessOrEqual(t, len(readOnlyServerInstructions), 512)
+	assert.Equal(t, version, result.Result.ServerInfo.Version)
 }
 
 func TestOnlyReadOnlyToolsRegistered(t *testing.T) {
@@ -160,6 +165,194 @@ func TestOnlyReadOnlyToolsRegistered(t *testing.T) {
 		"get_feed_detail",
 		"user_profile",
 	}, names)
+}
+
+func TestMCPToolsExposeStructuredContracts(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`),
+	)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var result struct {
+		Result struct {
+			Tools []struct {
+				Name         string         `json:"name"`
+				InputSchema  map[string]any `json:"inputSchema"`
+				OutputSchema map[string]any `json:"outputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	decodeMCPResponse(t, resp, &result)
+
+	tools := make(map[string]struct {
+		InputSchema  map[string]any
+		OutputSchema map[string]any
+	}, len(result.Result.Tools))
+	for _, tool := range result.Result.Tools {
+		tools[tool.Name] = struct {
+			InputSchema  map[string]any
+			OutputSchema map[string]any
+		}{
+			InputSchema:  tool.InputSchema,
+			OutputSchema: tool.OutputSchema,
+		}
+		require.NotEmpty(t, tool.OutputSchema, "%s must declare outputSchema", tool.Name)
+	}
+
+	search := tools["search_feeds"].InputSchema
+	properties := search["properties"].(map[string]any)
+	filters := properties["filters"].(map[string]any)
+	filterProperties := filters["properties"].(map[string]any)
+	sortBy := filterProperties["sort_by"].(map[string]any)
+	assert.Contains(t, sortBy["enum"], "relevance")
+	assert.Contains(t, sortBy["enum"], "综合")
+
+	limit := properties["limit"].(map[string]any)
+	assert.Equal(t, float64(maxFeedResultLimit), limit["maximum"])
+}
+
+func TestMCPToolErrorIncludesStructuredRecoveryAction(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/mcp",
+		strings.NewReader(`{
+			"jsonrpc":"2.0",
+			"id":1,
+			"method":"tools/call",
+			"params":{
+				"name":"search_feeds",
+				"arguments":{"keyword":" "}
+			}
+		}`),
+	)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var result struct {
+		Result struct {
+			IsError           bool `json:"isError"`
+			StructuredContent struct {
+				OK    bool `json:"ok"`
+				Error struct {
+					Source     string `json:"source"`
+					Code       string `json:"code"`
+					Retryable  bool   `json:"retryable"`
+					NextAction string `json:"next_action"`
+					RequestID  string `json:"request_id"`
+				} `json:"error"`
+			} `json:"structuredContent"`
+		} `json:"result"`
+	}
+	decodeMCPResponse(t, resp, &result)
+
+	assert.True(t, result.Result.IsError)
+	assert.False(t, result.Result.StructuredContent.OK)
+	assert.Equal(t, "input", result.Result.StructuredContent.Error.Source)
+	assert.Equal(t, "INVALID_ARGUMENT", result.Result.StructuredContent.Error.Code)
+	assert.False(t, result.Result.StructuredContent.Error.Retryable)
+	assert.Equal(t, actionCorrectInput, result.Result.StructuredContent.Error.NextAction)
+	assert.Equal(t, resp.Header.Get("X-Request-ID"), result.Result.StructuredContent.Error.RequestID)
+}
+
+func TestMCPToolSuccessIncludesStructuredContent(t *testing.T) {
+	service := NewXiaohongshuService()
+	service.logins.remember(xiaohongshu.LoginState{
+		Stage: xiaohongshu.LoginStageLoggedIn,
+	})
+	router := setupRoutes(NewAppServer(service))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/mcp",
+		strings.NewReader(`{
+			"jsonrpc":"2.0",
+			"id":1,
+			"method":"tools/call",
+			"params":{
+				"name":"check_login_status",
+				"arguments":{}
+			}
+		}`),
+	)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var result struct {
+		Result struct {
+			IsError           bool `json:"isError"`
+			StructuredContent struct {
+				OK   bool `json:"ok"`
+				Data struct {
+					Ready      bool   `json:"ready"`
+					NextAction string `json:"next_action"`
+				} `json:"data"`
+			} `json:"structuredContent"`
+		} `json:"result"`
+	}
+	decodeMCPResponse(t, resp, &result)
+
+	assert.False(t, result.Result.IsError)
+	assert.True(t, result.Result.StructuredContent.OK)
+	assert.True(t, result.Result.StructuredContent.Data.Ready)
+	assert.Equal(t, actionUseReadTools, result.Result.StructuredContent.Data.NextAction)
+}
+
+func TestHealthIncludesSiteAndEffectivePolicy(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService()))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	request.Host = "127.0.0.1:18060"
+
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Data struct {
+			Site   string `json:"site"`
+			Policy struct {
+				MinInterval  string `json:"min_interval"`
+				MaxJitter    string `json:"max_jitter"`
+				MaxQueueWait string `json:"max_queue_wait"`
+				MaxComments  int    `json:"max_comments"`
+				MaxReplies   int    `json:"max_replies"`
+			} `json:"policy"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, xiaohongshu.Site().Name, response.Data.Site)
+	assert.Equal(t, "30s", response.Data.Policy.MinInterval)
+	assert.Equal(t, "15s", response.Data.Policy.MaxJitter)
+	assert.Equal(t, "1m0s", response.Data.Policy.MaxQueueWait)
+	assert.Equal(t, 50, response.Data.Policy.MaxComments)
+	assert.Equal(t, 10, response.Data.Policy.MaxReplies)
 }
 
 func TestMCPProgressUsesRequestStream(t *testing.T) {

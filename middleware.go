@@ -80,6 +80,9 @@ func requestLoggingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := fmt.Sprintf("req-%d", requestSequence.Add(1))
 		c.Header("X-Request-ID", requestID)
+		c.Request = c.Request.WithContext(
+			contextWithRequestID(c.Request.Context(), requestID),
+		)
 
 		started := time.Now()
 		logrus.WithFields(logrus.Fields{

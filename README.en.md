@@ -73,6 +73,10 @@ downloads are checked against repository-pinned SHA256 hashes.
   forever.
 - Comment reads are capped and deliberately slow, so this is not a bulk
   collection tool.
+- MCP returns typed structured content, stable error codes, and recovery
+  actions while retaining text fallbacks for older clients.
+- Note and profile results include a token-free `sourceUrl` suitable for
+  citations.
 - For current status, run `curl http://127.0.0.1:18060/health`.
 
 More documentation:

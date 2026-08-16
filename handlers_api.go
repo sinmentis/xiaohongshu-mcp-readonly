@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"net/http"
 	"time"
 
@@ -14,9 +12,12 @@ import (
 func respondError(c *gin.Context, statusCode int, code, message string, details any) {
 	logrus.Errorf("%s %s %d", c.Request.Method, c.Request.URL.Path, statusCode)
 	c.JSON(statusCode, ErrorResponse{
-		Error:   message,
-		Code:    code,
-		Details: details,
+		Error:     message,
+		Code:      code,
+		Details:   details,
+		Source:    "server",
+		Retryable: false,
+		RequestID: requestIDFromContext(c.Request.Context()),
 	})
 }
 
@@ -34,43 +35,33 @@ func respondServiceError(
 	fallbackMessage string,
 	err error,
 ) {
-	statusCode := http.StatusInternalServerError
-	code := fallbackCode
-	message := fallbackMessage
-
-	var operationTimeout *operationTimeoutError
-	var queueTimeout *operationQueueTimeoutError
-	var gateUnavailable *accessGateUnavailableError
-	var browserUnavailable *browserRuntimeUnavailableError
-
-	switch {
-	case errors.As(err, &operationTimeout):
-		statusCode = http.StatusGatewayTimeout
-		code = "OPERATION_TIMEOUT"
-		message = "Browser operation timed out"
-	case errors.As(err, &queueTimeout):
-		statusCode = http.StatusServiceUnavailable
-		code = "SERVICE_BUSY"
-		message = "Browser operation could not start"
-	case errors.As(err, &gateUnavailable):
-		statusCode = http.StatusServiceUnavailable
-		code = "SERVICE_DEGRADED"
-		message = "A previous browser operation is still stopping"
-	case errors.As(err, &browserUnavailable):
-		statusCode = http.StatusServiceUnavailable
-		code = "BROWSER_UNAVAILABLE"
-		message = "Browser runtime is unavailable"
-	case errors.Is(err, context.DeadlineExceeded):
-		statusCode = http.StatusGatewayTimeout
-		code = "OPERATION_TIMEOUT"
-		message = "Browser operation timed out"
-	case errors.Is(err, context.Canceled):
-		statusCode = http.StatusRequestTimeout
-		code = "REQUEST_CANCELED"
-		message = "Request was canceled"
+	classified := classifyPublicError(
+		c.Request.Context(),
+		fallbackCode,
+		fallbackMessage,
+		err,
+	)
+	publicError := classified.Error
+	var details any
+	if publicError.Details != "" {
+		details = publicError.Details
 	}
-
-	respondError(c, statusCode, code, message, safeErrorText(err))
+	logrus.Errorf(
+		"%s %s %d",
+		c.Request.Method,
+		c.Request.URL.Path,
+		classified.StatusCode,
+	)
+	c.JSON(classified.StatusCode, ErrorResponse{
+		Error:      publicError.Message,
+		Code:       publicError.Code,
+		Details:    details,
+		Source:     publicError.Source,
+		Retryable:  publicError.Retryable,
+		NextAction: publicError.NextAction,
+		ActionPath: publicError.ActionPath,
+		RequestID:  publicError.RequestID,
+	})
 }
 
 type accessHealth struct {
@@ -93,6 +84,14 @@ type browserHealth struct {
 	State       string `json:"state"`
 	Launches    uint64 `json:"launches"`
 	LastFailure string `json:"last_failure,omitempty"`
+}
+
+type accessPolicyHealth struct {
+	MinInterval  string `json:"min_interval"`
+	MaxJitter    string `json:"max_jitter"`
+	MaxQueueWait string `json:"max_queue_wait"`
+	MaxComments  int    `json:"max_comments"`
+	MaxReplies   int    `json:"max_replies"`
 }
 
 func (s *AppServer) healthHandler(c *gin.Context) {
@@ -145,8 +144,16 @@ func (s *AppServer) healthHandler(c *gin.Context) {
 			"status":    status,
 			"service":   "xiaohongshu-mcp-readonly",
 			"version":   version,
+			"site":      xiaohongshu.Site().Name,
 			"timestamp": now.UTC().Format(time.RFC3339),
 			"access":    access,
+			"policy": accessPolicyHealth{
+				MinInterval:  s.xiaohongshuService.policy.MinInterval.String(),
+				MaxJitter:    s.xiaohongshuService.policy.MaxJitter.String(),
+				MaxQueueWait: s.xiaohongshuService.policy.MaxQueueWait.String(),
+				MaxComments:  s.xiaohongshuService.policy.MaxComments,
+				MaxReplies:   s.xiaohongshuService.policy.MaxReplies,
+			},
 			"browser": browserHealth{
 				State:       browserSnapshot.State,
 				Launches:    browserSnapshot.Launches,

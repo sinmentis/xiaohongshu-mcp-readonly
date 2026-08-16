@@ -67,23 +67,34 @@ type LoginStatusResponse struct {
 	Stage      xiaohongshu.LoginStage `json:"stage,omitempty"`
 	Username   string                 `json:"username,omitempty"` // 当前登录账号的昵称
 	UserID     string                 `json:"user_id,omitempty"`  // 用户唯一标识（个人主页 URL 中的 ID）
+	Ready      bool                   `json:"ready"`
+	NextAction string                 `json:"next_action"`
+	ActionPath string                 `json:"action_path,omitempty"`
 }
 
 type LoginQrcodeResponse struct {
 	Timeout    string                 `json:"timeout"`
+	ExpiresAt  string                 `json:"expires_at,omitempty"`
 	Active     bool                   `json:"active"`
 	IsLoggedIn bool                   `json:"is_logged_in"`
 	Stage      xiaohongshu.LoginStage `json:"stage"`
 	Site       string                 `json:"site"`
+	HasQRCode  bool                   `json:"has_qr_code"`
+	NextAction string                 `json:"next_action"`
+	ActionPath string                 `json:"action_path,omitempty"`
 	Img        string                 `json:"img,omitempty"`
 }
 
 type FeedsListResponse struct {
-	Feeds []xiaohongshu.Feed `json:"feeds"`
-	Count int                `json:"count"`
+	Feeds      []xiaohongshu.Feed `json:"feeds"`
+	Count      int                `json:"count"`
+	TotalCount int                `json:"total_count,omitempty"`
+	HasMore    bool               `json:"has_more,omitempty"`
 }
 
 type UserProfileResponse struct {
+	UserID        string                         `json:"userId"`
+	SourceURL     string                         `json:"sourceUrl"`
 	UserBasicInfo xiaohongshu.UserBasicInfo      `json:"userBasicInfo"`
 	Interactions  []xiaohongshu.UserInteractions `json:"interactions"`
 	Feeds         []xiaohongshu.Feed             `json:"feeds"`
@@ -94,20 +105,20 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 		state, err := session.currentState(ctx)
 		if err == nil {
 			state = publicLoginState(state)
-			return &LoginStatusResponse{
+			return finalizeLoginStatus(&LoginStatusResponse{
 				IsLoggedIn: state.Stage == xiaohongshu.LoginStageLoggedIn,
 				Stage:      state.Stage,
-			}, nil
+			}), nil
 		}
 		if !errors.Is(err, errLoginSessionClosed) {
 			return nil, err
 		}
 	}
 	if state, ok := s.logins.recentState(loginStateCacheTTL); ok {
-		return &LoginStatusResponse{
+		return finalizeLoginStatus(&LoginStatusResponse{
 			IsLoggedIn: state.Stage == xiaohongshu.LoginStageLoggedIn,
 			Stage:      state.Stage,
-		}, nil
+		}), nil
 	}
 
 	return withReadAccess(
@@ -145,7 +156,7 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 						}
 					}
 
-					return response, nil
+					return finalizeLoginStatus(response), nil
 				},
 			)
 		},
@@ -327,13 +338,55 @@ func loginQrcodeResponse(
 	if timeout < 0 {
 		timeout = 0
 	}
-	return &LoginQrcodeResponse{
+	response := &LoginQrcodeResponse{
 		Timeout:    timeout.Round(time.Second).String(),
 		Active:     active,
 		IsLoggedIn: state.Stage == xiaohongshu.LoginStageLoggedIn,
 		Stage:      state.Stage,
 		Site:       xiaohongshu.Site().Name,
+		HasQRCode:  state.QRCode != "",
 		Img:        state.QRCode,
+	}
+	if active && timeout > 0 {
+		response.ExpiresAt = time.Now().Add(timeout).UTC().Format(time.RFC3339)
+	}
+	response.NextAction, response.ActionPath = loginQrcodeNextAction(state.Stage)
+	return response
+}
+
+func finalizeLoginStatus(response *LoginStatusResponse) *LoginStatusResponse {
+	response.Ready = response.IsLoggedIn
+	switch response.Stage {
+	case xiaohongshu.LoginStageLoggedIn:
+		response.NextAction = actionUseReadTools
+	case xiaohongshu.LoginStageWaitingConfirmation:
+		response.NextAction = actionConfirmOnPhone
+		response.ActionPath = loginActionPath
+	case xiaohongshu.LoginStageVerifying:
+		response.NextAction = actionWaitForLoginVerification
+		response.ActionPath = loginActionPath
+	default:
+		response.NextAction = actionCallLoginTool
+		response.ActionPath = loginActionPath
+	}
+	return response
+}
+
+func loginQrcodeNextAction(
+	stage xiaohongshu.LoginStage,
+) (nextAction string, actionPath string) {
+	switch stage {
+	case xiaohongshu.LoginStageLoggedIn:
+		return actionUseReadTools, ""
+	case xiaohongshu.LoginStageQRCode,
+		xiaohongshu.LoginStageDeviceVerification:
+		return actionScanQRCode, loginActionPath
+	case xiaohongshu.LoginStageWaitingConfirmation:
+		return actionConfirmOnPhone, loginActionPath
+	case xiaohongshu.LoginStageVerifying:
+		return actionWaitForLoginVerification, loginActionPath
+	default:
+		return actionRestartLogin, loginActionPath
 	}
 }
 
@@ -516,6 +569,7 @@ func (s *XiaohongshuService) ListFeeds(ctx context.Context) (*FeedsListResponse,
 					if err != nil {
 						return nil, err
 					}
+					addFeedSourceURLs(feeds)
 
 					return &FeedsListResponse{
 						Feeds: feeds,
@@ -544,6 +598,7 @@ func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, fi
 					if err != nil {
 						return nil, err
 					}
+					addFeedSourceURLs(feeds)
 
 					return &FeedsListResponse{
 						Feeds: feeds,
@@ -591,6 +646,9 @@ func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID
 					if err != nil {
 						return nil, err
 					}
+					result.Note.SourceURL = xiaohongshu.FeedSourceURL(
+						result.Note.NoteID,
+					)
 
 					return &FeedDetailResponse{
 						FeedID: feedID,
@@ -629,7 +687,10 @@ func (s *XiaohongshuService) UserProfile(ctx context.Context, userID, xsecToken,
 					if err != nil {
 						return nil, err
 					}
+					addFeedSourceURLs(result.Feeds)
 					return &UserProfileResponse{
+						UserID:        userID,
+						SourceURL:     xiaohongshu.UserSourceURL(userID),
 						UserBasicInfo: result.UserBasicInfo,
 						Interactions:  result.Interactions,
 						Feeds:         result.Feeds,
@@ -673,6 +734,12 @@ func (s *XiaohongshuService) enforceCommentPolicy(config xiaohongshu.CommentLoad
 	config.ScrollSpeed = "slow"
 
 	return config
+}
+
+func addFeedSourceURLs(feeds []xiaohongshu.Feed) {
+	for index := range feeds {
+		feeds[index].SourceURL = xiaohongshu.FeedSourceURL(feeds[index].ID)
+	}
 }
 
 func newBrowser() *browser.Browser {

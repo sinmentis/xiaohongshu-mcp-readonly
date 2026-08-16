@@ -20,5 +20,7 @@ func TestSite(t *testing.T) {
 	assert.True(t, site.ForceZhCN)
 	assert.True(t, site.MatchesURL("https://www.rednote.com/explore?source=web"))
 	assert.False(t, site.MatchesURL("https://www.xiaohongshu.com/explore"))
+	assert.Equal(t, "https://www.rednote.com/explore/note-1", FeedSourceURL("note-1"))
+	assert.Equal(t, "https://www.rednote.com/user/profile/user-1", UserSourceURL("user-1"))
 	assert.Error(t, SetSite("unknown"))
 }

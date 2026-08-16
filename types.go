@@ -3,9 +3,14 @@ package main
 import "github.com/sinmentis/xiaohongshu-mcp-readonly/xiaohongshu"
 
 type ErrorResponse struct {
-	Error   string `json:"error"`
-	Code    string `json:"code"`
-	Details any    `json:"details,omitempty"`
+	Error      string `json:"error"`
+	Code       string `json:"code"`
+	Details    any    `json:"details,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Retryable  bool   `json:"retryable"`
+	NextAction string `json:"next_action,omitempty"`
+	ActionPath string `json:"action_path,omitempty"`
+	RequestID  string `json:"request_id,omitempty"`
 }
 
 type SuccessResponse struct {
@@ -46,8 +51,8 @@ type SearchFeedsRequest struct {
 }
 
 type FeedDetailResponse struct {
-	FeedID string `json:"feed_id"`
-	Data   any    `json:"data"`
+	FeedID string                          `json:"feed_id"`
+	Data   *xiaohongshu.FeedDetailResponse `json:"data"`
 }
 
 type UserProfileRequest struct {

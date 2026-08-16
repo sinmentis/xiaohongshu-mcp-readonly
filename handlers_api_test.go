@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sinmentis/xiaohongshu-mcp-readonly/xiaohongshu"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,6 +32,9 @@ func TestRespondServiceErrorClassifiesOperationTimeout(t *testing.T) {
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
 	assert.Equal(t, "OPERATION_TIMEOUT", response.Code)
 	assert.Contains(t, response.Details, "inspect /health")
+	assert.True(t, response.Retryable)
+	assert.Equal(t, actionInspectHealth, response.NextAction)
+	assert.Equal(t, healthActionPath, response.ActionPath)
 }
 
 func TestRespondServiceErrorClassifiesStuckGate(t *testing.T) {
@@ -50,4 +54,28 @@ func TestRespondServiceErrorClassifiesStuckGate(t *testing.T) {
 	var response ErrorResponse
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
 	assert.Equal(t, "SERVICE_DEGRADED", response.Code)
+}
+
+func TestRespondServiceErrorClassifiesInvalidArgument(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(requestLoggingMiddleware())
+	router.GET("/test", func(c *gin.Context) {
+		respondServiceError(c, "FALLBACK", "fallback", &xiaohongshu.InvalidArgumentError{
+			Field:     "tab",
+			Value:     "unknown",
+			Supported: []string{"note", "fav", "liked"},
+		})
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/test", nil))
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	var response ErrorResponse
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "input", response.Source)
+	assert.Equal(t, "INVALID_ARGUMENT", response.Code)
+	assert.Equal(t, actionCorrectInput, response.NextAction)
+	assert.Equal(t, recorder.Header().Get("X-Request-ID"), response.RequestID)
 }
