@@ -310,7 +310,7 @@ func extractZip(archivePath, destDir string) error {
 }
 
 func archiveTarget(destDir, name string) (string, error) {
-	if name == "" || filepath.IsAbs(name) {
+	if !filepath.IsLocal(name) {
 		return "", fmt.Errorf("invalid browser archive path: %q", name)
 	}
 
