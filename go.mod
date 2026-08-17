@@ -8,7 +8,7 @@ require (
 	github.com/go-rod/rod v0.116.2
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/pkg/errors v0.9.1
-	github.com/sirupsen/logrus v1.9.3
+	github.com/sirupsen/logrus v1.10.0
 	github.com/stretchr/testify v1.11.1
 	github.com/ulikunitz/xz v0.5.15
 	github.com/xpzouying/headless_browser v0.4.0
