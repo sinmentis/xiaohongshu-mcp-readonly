@@ -1,6 +1,9 @@
 package xiaohongshu
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+)
 
 type FeedsValue struct {
 	Value []Feed `json:"_value"`
@@ -138,8 +141,36 @@ type VideoImage struct {
 	ThumbnailFileID  string `json:"thumbnailFileid"`
 }
 
+// VideoID exceeds the IEEE 754 safe integer range, so it is emitted as a
+// string. JSON clients that decode numbers losslessly otherwise produce a
+// value they cannot re-serialize.
+type VideoID int64
+
+func (v *VideoID) UnmarshalJSON(data []byte) error {
+	raw := string(data)
+	if raw == "null" {
+		return nil
+	}
+	if unquoted, err := strconv.Unquote(raw); err == nil {
+		raw = unquoted
+	}
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return err
+	}
+	*v = VideoID(n)
+	return nil
+}
+
+func (v VideoID) MarshalJSON() ([]byte, error) {
+	return strconv.AppendQuote(nil, strconv.FormatInt(int64(v), 10)), nil
+}
+
 type VideoMedia struct {
-	VideoID int64     `json:"videoId"`
+	VideoID VideoID   `json:"videoId"`
 	Video   VideoMeta `json:"video"`
 	// Stream is keyed by codec so new codecs are preserved.
 	Stream map[string][]VideoStream `json:"stream"`
