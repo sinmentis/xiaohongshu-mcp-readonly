@@ -49,7 +49,8 @@ func NewXiaohongshuService(policies ...AccessPolicy) *XiaohongshuService {
 	}
 
 	service := &XiaohongshuService{
-		accessGate: newAccessGate(
+		accessGate: newConcurrentAccessGate(
+			policy.MaxConcurrent,
 			policy.MinInterval,
 			policy.MaxJitter,
 			policy.MaxQueueWait,
@@ -260,8 +261,10 @@ func (s *XiaohongshuService) Close(ctx context.Context) error {
 	return nil
 }
 
+// refreshReadBrowser replaces the shared browser after cookies change. It only
+// runs under exclusive access so it never closes pages owned by other callers.
 func (s *XiaohongshuService) refreshReadBrowser(ctx context.Context) error {
-	if !s.readBrowserStale.Swap(false) {
+	if !hasExclusiveAccess(ctx) || !s.readBrowserStale.Swap(false) {
 		return nil
 	}
 	if err := s.readBrowser.ResetAndWait(ctx, "login cookies changed"); err != nil {
@@ -481,7 +484,7 @@ func (s *XiaohongshuService) waitScanInBackground(
 }
 
 func (s *XiaohongshuService) verifyRestoredLogin() error {
-	_, err := withReadAccessQueue(
+	_, err := withExclusiveReadAccess(
 		s,
 		context.Background(),
 		"verify_saved_login",

@@ -23,8 +23,8 @@ and token-handling instructions for clients that consume MCP instructions.
 - `mcp_server.go` is the MCP registration seam. Register tools positively.
 - `routes.go` is the HTTP registration seam. Keep an explicit read-only route
   set.
-- `access_gate.go` is the deep module that serializes browser access and applies
-  cooldown and jitter.
+- `access_gate.go` is the deep module that bounds concurrent browser access,
+  staggers operation starts, and runs browser resets exclusively.
 - `xiaohongshu/site.go` owns site-specific URLs and locale behavior.
 - `browser/` owns browser resolution, identity, download verification, and
   cookie injection.

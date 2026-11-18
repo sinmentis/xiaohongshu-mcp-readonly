@@ -158,10 +158,19 @@ func TestServiceRefreshesBrowserAfterCookiesChange(t *testing.T) {
 	))
 	service.readBrowserStale.Store(true)
 
-	_, err := withServiceReadPage(
+	// Stale cookies force exclusive access so the reset cannot close shared pages.
+	_, err := withReadAccess(
 		service,
 		context.Background(),
-		func(*rod.Page) (struct{}, error) { return struct{}{}, nil },
+		"refresh",
+		time.Second,
+		func(ctx context.Context) (struct{}, error) {
+			return withServiceReadPage(
+				service,
+				ctx,
+				func(*rod.Page) (struct{}, error) { return struct{}{}, nil },
+			)
+		},
 	)
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), launches.Load())

@@ -66,6 +66,7 @@ func respondServiceError(
 
 type accessHealth struct {
 	State           string `json:"state"`
+	Active          int    `json:"active"`
 	OperationID     uint64 `json:"operation_id,omitempty"`
 	Operation       string `json:"operation,omitempty"`
 	Phase           string `json:"phase,omitempty"`
@@ -87,11 +88,12 @@ type browserHealth struct {
 }
 
 type accessPolicyHealth struct {
-	MinInterval  string `json:"min_interval"`
-	MaxJitter    string `json:"max_jitter"`
-	MaxQueueWait string `json:"max_queue_wait"`
-	MaxComments  int    `json:"max_comments"`
-	MaxReplies   int    `json:"max_replies"`
+	MaxConcurrent int    `json:"max_concurrency"`
+	MinInterval   string `json:"min_interval"`
+	MaxJitter     string `json:"max_jitter"`
+	MaxQueueWait  string `json:"max_queue_wait"`
+	MaxComments   int    `json:"max_comments"`
+	MaxReplies    int    `json:"max_replies"`
 }
 
 func (s *AppServer) healthHandler(c *gin.Context) {
@@ -114,6 +116,7 @@ func (s *AppServer) healthHandler(c *gin.Context) {
 
 	access := accessHealth{
 		State:           accessSnapshot.State,
+		Active:          accessSnapshot.Active,
 		OperationID:     accessSnapshot.OperationID,
 		Operation:       accessSnapshot.Operation,
 		Phase:           accessSnapshot.Phase,
@@ -148,11 +151,12 @@ func (s *AppServer) healthHandler(c *gin.Context) {
 			"timestamp": now.UTC().Format(time.RFC3339),
 			"access":    access,
 			"policy": accessPolicyHealth{
-				MinInterval:  s.xiaohongshuService.policy.MinInterval.String(),
-				MaxJitter:    s.xiaohongshuService.policy.MaxJitter.String(),
-				MaxQueueWait: s.xiaohongshuService.policy.MaxQueueWait.String(),
-				MaxComments:  s.xiaohongshuService.policy.MaxComments,
-				MaxReplies:   s.xiaohongshuService.policy.MaxReplies,
+				MaxConcurrent: s.xiaohongshuService.accessGate.maxConcurrent,
+				MinInterval:   s.xiaohongshuService.policy.MinInterval.String(),
+				MaxJitter:     s.xiaohongshuService.policy.MaxJitter.String(),
+				MaxQueueWait:  s.xiaohongshuService.policy.MaxQueueWait.String(),
+				MaxComments:   s.xiaohongshuService.policy.MaxComments,
+				MaxReplies:    s.xiaohongshuService.policy.MaxReplies,
 			},
 			"browser": browserHealth{
 				State:       browserSnapshot.State,

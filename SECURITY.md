@@ -69,9 +69,10 @@ Users who do not trust the bundled browser distribution can set
 
 ## Account safety
 
-The default access gate serializes requests, waits at least 30 seconds between
-operations, adds up to 15 seconds of jitter, limits comment loading, and forces
-slow scrolling.
+The default access gate runs at most three operations at once, staggers starts
+by at least one second plus up to one second of jitter, limits comment loading,
+and forces slow scrolling. Use `-max-concurrency 1` and a larger
+`-min-request-interval` for a more conservative profile.
 
 These controls reduce burst risk but do not prevent account challenges or
 restrictions. Use a dedicated account and avoid unattended bulk collection.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -48,6 +49,104 @@ func TestAccessGateSerializesOperations(t *testing.T) {
 		require.NoError(t, err)
 	}
 	assert.Equal(t, int32(1), maxActive.Load())
+}
+
+func TestAccessGateCapsParallelOperations(t *testing.T) {
+	gate := newConcurrentAccessGate(2, 0, 0, time.Second)
+
+	var active, maxActive atomic.Int32
+	var wg sync.WaitGroup
+	for range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			assert.NoError(t, gate.Run(context.Background(), "test", time.Second, func(context.Context) error {
+				current := active.Add(1)
+				defer active.Add(-1)
+				for {
+					previous := maxActive.Load()
+					if current <= previous || maxActive.CompareAndSwap(previous, current) {
+						break
+					}
+				}
+				time.Sleep(30 * time.Millisecond)
+				return nil
+			}))
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, int32(2), maxActive.Load())
+}
+
+func TestAccessGateStaggersParallelStarts(t *testing.T) {
+	const spacing = 40 * time.Millisecond
+	gate := newConcurrentAccessGate(3, spacing, 0, time.Second)
+
+	var mu sync.Mutex
+	var starts []time.Time
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			assert.NoError(t, gate.Run(context.Background(), "test", time.Second, func(context.Context) error {
+				mu.Lock()
+				starts = append(starts, time.Now())
+				mu.Unlock()
+				time.Sleep(150 * time.Millisecond)
+				return nil
+			}))
+		}()
+	}
+	wg.Wait()
+
+	require.Len(t, starts, 3)
+	slices.SortFunc(starts, func(a, b time.Time) int { return a.Compare(b) })
+	assert.GreaterOrEqual(t, starts[2].Sub(starts[0]), 2*spacing-10*time.Millisecond)
+	// Starts overlap the 150ms operations, so they ran in parallel.
+	assert.Less(t, starts[2].Sub(starts[0]), 150*time.Millisecond)
+}
+
+func TestAccessGateExclusiveWaitsForSharedWork(t *testing.T) {
+	gate := newConcurrentAccessGate(3, 0, 0, time.Second)
+
+	var shared atomic.Int32
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			assert.NoError(t, gate.Run(context.Background(), "shared", time.Second, func(context.Context) error {
+				shared.Add(1)
+				started <- struct{}{}
+				<-release
+				shared.Add(-1)
+				return nil
+			}))
+		}()
+	}
+	<-started
+	<-started
+
+	exclusiveDone := make(chan int32, 1)
+	go func() {
+		_ = gate.RunExclusive(context.Background(), "exclusive", time.Second, time.Second, func(ctx context.Context) error {
+			assert.True(t, hasExclusiveAccess(ctx))
+			exclusiveDone <- shared.Load()
+			return nil
+		})
+	}()
+
+	select {
+	case <-exclusiveDone:
+		t.Fatal("exclusive operation ran while shared operations held the browser")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	assert.Equal(t, int32(0), <-exclusiveDone)
+	wg.Wait()
 }
 
 func TestAccessGateEnforcesCooldown(t *testing.T) {

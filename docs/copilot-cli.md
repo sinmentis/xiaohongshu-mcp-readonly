@@ -30,8 +30,9 @@ COOKIES_PATH="$HOME/.local/share/xiaohongshu-mcp-readonly/cookies.json" \
   "$HOME/.local/bin/xiaohongshu-mcp-readonly" \
   -site rednote \
   -port 127.0.0.1:18060 \
-  -min-request-interval 30s \
-  -request-jitter 15s \
+  -max-concurrency 3 \
+  -min-request-interval 1s \
+  -request-jitter 1s \
   -max-queue-wait 1m \
   -max-comments 50 \
   -max-replies 10

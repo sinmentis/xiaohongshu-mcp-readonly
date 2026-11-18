@@ -15,7 +15,7 @@ The fork has a narrower product interface:
 - only six read-only MCP tools are exposed;
 - HTTP routes match the same read-only scope;
 - all traffic remains local;
-- browser access is serialized and deliberately slow;
+- browser access is bounded, staggered, and paced by humanized page delays;
 - RedNote and Xiaohongshu sessions are separated;
 - QR login can be completed from a localhost page.
 

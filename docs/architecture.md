@@ -30,8 +30,9 @@ MCP / HTTP composition root
 XiaohongshuService
         |
         +--> accessGate
-        |      serializes requests
-        |      applies cooldown and jitter
+        |      bounds parallel requests
+        |      staggers starts with jitter
+        |      runs browser resets exclusively
         |      enforces queue and operation deadlines
         |      reports progress and stuck work
         |
@@ -62,8 +63,8 @@ so callers do not need to understand the page implementation.
 
 ### Access gate
 
-`access_gate.go` exposes one operation interface and hides serialization,
-cooldown, jitter, queue limits, server deadlines, cancellation, progress
+`access_gate.go` exposes one operation interface and hides bounded
+concurrency, start staggering, jitter, exclusive browser resets, queue limits, server deadlines, cancellation, progress
 heartbeats, and completion timing. A running operation that ignores
 cancellation no longer holds the MCP response open indefinitely. The gate
 returns a timeout, marks itself degraded until cleanup finishes, and releases

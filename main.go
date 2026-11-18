@@ -17,6 +17,7 @@ var version = "dev"
 func main() {
 	var (
 		headless      bool
+		maxConcurrent int
 		port          string
 		minInterval   time.Duration
 		requestJitter time.Duration
@@ -27,8 +28,10 @@ func main() {
 	)
 	flag.BoolVar(&headless, "headless", true, "run the browser headlessly")
 	flag.StringVar(&port, "port", "127.0.0.1:18060", "local loopback listen address")
-	flag.DurationVar(&minInterval, "min-request-interval", 30*time.Second, "minimum delay between completed site operations")
-	flag.DurationVar(&requestJitter, "request-jitter", 15*time.Second, "maximum additional random delay per operation")
+	defaults := DefaultAccessPolicy()
+	flag.IntVar(&maxConcurrent, "max-concurrency", defaults.MaxConcurrent, "maximum browser operations running at once (1-8)")
+	flag.DurationVar(&minInterval, "min-request-interval", defaults.MinInterval, "minimum spacing between operation starts")
+	flag.DurationVar(&requestJitter, "request-jitter", defaults.MaxJitter, "maximum additional random spacing per operation start")
 	flag.DurationVar(&maxQueueWait, "max-queue-wait", time.Minute, "maximum time to wait for another browser operation")
 	flag.IntVar(&maxComments, "max-comments", 50, "maximum top-level comments per note request")
 	flag.IntVar(&maxReplies, "max-replies", 10, "maximum reply-thread threshold")
@@ -43,11 +46,12 @@ func main() {
 	logrus.Infof("site: %s", xiaohongshu.Site().Name)
 
 	accessPolicy := AccessPolicy{
-		MinInterval:  minInterval,
-		MaxJitter:    requestJitter,
-		MaxQueueWait: maxQueueWait,
-		MaxComments:  maxComments,
-		MaxReplies:   maxReplies,
+		MaxConcurrent: maxConcurrent,
+		MinInterval:   minInterval,
+		MaxJitter:     requestJitter,
+		MaxQueueWait:  maxQueueWait,
+		MaxComments:   maxComments,
+		MaxReplies:    maxReplies,
 	}
 	if err := accessPolicy.Validate(); err != nil {
 		logrus.Fatalf("invalid access policy: %v", err)
