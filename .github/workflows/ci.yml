@@ -55,11 +55,14 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          shellcheck scripts/*
-          for script in scripts/*; do
+          shellcheck scripts/* .github/scripts/*.sh
+          for script in scripts/* .github/scripts/*.sh; do
             bash -n "$script"
           done
           scripts/setup-local --site rednote --agent none --dry-run
+
+      - name: Test release version selection
+        run: bash .github/scripts/test-release-version.sh
 
       - name: Cross-compile
         run: |
