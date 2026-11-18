@@ -12,9 +12,10 @@ import (
 )
 
 type searchSnapshot struct {
-	url   string
-	ready bool
-	err   error
+	url       string
+	ready     bool
+	loggedOut bool
+	err       error
 }
 
 type fakeSearchNavigator struct {
@@ -42,7 +43,7 @@ func (f *fakeSearchNavigator) Eval(js string, _ ...interface{}) (*proto.RuntimeR
 	snapshot := f.snapshots[0]
 	f.snapshots = f.snapshots[1:]
 	return &proto.RuntimeRemoteObject{Value: gson.New(map[string]any{
-		"url": snapshot.url, "ready": snapshot.ready,
+		"url": snapshot.url, "ready": snapshot.ready, "loggedOut": snapshot.loggedOut,
 	})}, snapshot.err
 }
 
@@ -58,6 +59,14 @@ func TestNavigateToSearchWaitsForSearchState(t *testing.T) {
 		require.Equal(t, []string{"navigate", "search-state"}, page.calls)
 		require.Contains(t, page.waitJS, "search.state")
 		require.Contains(t, page.waitJS, `state === "success"`)
+	})
+
+	t.Run("ready results take precedence over a stale guest signal", func(t *testing.T) {
+		page := &fakeSearchNavigator{snapshots: []searchSnapshot{{
+			url: searchURL, ready: true, loggedOut: true,
+		}}}
+
+		require.NoError(t, navigateToSearch(page, site, searchURL))
 	})
 
 	t.Run("stops on delayed verification even if ready", func(t *testing.T) {
@@ -78,6 +87,19 @@ func TestNavigateToSearchWaitsForSearchState(t *testing.T) {
 		require.ErrorContains(t, err, "navigate to search page")
 		require.Equal(t, []string{"navigate"}, page.calls)
 	})
+}
+
+func TestNavigateToSearchDetectsLoggedOutPage(t *testing.T) {
+	site := sites[SiteRednote]
+	searchURL := site.Base + "/search_result"
+	page := &fakeSearchNavigator{snapshots: []searchSnapshot{
+		{url: searchURL, loggedOut: true},
+	}}
+
+	err := navigateToSearch(page, site, searchURL)
+
+	require.ErrorIs(t, err, ErrSearchLoginRequired)
+	require.Empty(t, page.snapshots)
 }
 
 func TestClassifySearchRedirect(t *testing.T) {

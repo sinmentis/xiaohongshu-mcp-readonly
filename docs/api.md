@@ -153,11 +153,12 @@ preserves the full current-page result.
 Feed summaries and details include a token-free `sourceUrl`. Use that URL for
 citations. Keep `xsecToken` only for subsequent tool inputs.
 
-If the platform redirects a search to sign-in, HTTP returns `401 LOGIN_REQUIRED`
-with `/login` as the local recovery page. A redirect to a platform security
-check returns `403 PLATFORM_VERIFICATION_REQUIRED`; complete the check directly
-on the platform. MCP returns the same error codes. Neither error is retryable
-without user action, and redirect URLs are not returned.
+If the platform redirects a search to sign-in or the search page identifies the
+session as a guest, HTTP returns `401 LOGIN_REQUIRED` with `/login` as the local
+recovery page. A redirect to a platform security check returns
+`403 PLATFORM_VERIFICATION_REQUIRED`; complete the check directly on the
+platform. MCP returns the same error codes. Neither error is retryable without
+user action, and redirect URLs are not returned.
 
 ## Feed detail
 
