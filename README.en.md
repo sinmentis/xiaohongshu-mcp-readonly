@@ -27,7 +27,7 @@ browser-based QR sign-in and no need to give account cookies to your AI client.
 [Installation](#quick-start) · [Six read-only tools](#mcp-tools) ·
 [Copilot CLI setup](docs/copilot-cli.md) · [Troubleshooting](docs/troubleshooting.md)
 
-Requires Go 1.25.13 or later. A dedicated test account is recommended.
+Requires Go 1.26.11 or later. A dedicated test account is recommended.
 
 On Linux with a systemd user session:
 
