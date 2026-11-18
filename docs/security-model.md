@@ -63,8 +63,8 @@ existing Playwright Chromium installation.
 
 ## Rate limiting
 
-The access gate serializes all exposed browser operations and applies cooldown
-and jitter. This is best-effort risk reduction, not a promise that the platform
+The access gate caps parallel browser operations (three by default), staggers
+their starts with jitter, and runs browser resets exclusively. This is best-effort risk reduction, not a promise that the platform
 will accept automated access.
 
 ## Logs

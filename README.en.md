@@ -71,8 +71,10 @@ downloads are checked against repository-pinned SHA256 hashes.
 
 ## Runtime behavior
 
-- Browser operations run through a queue and wait for at most one minute.
-- Completed operations are separated by at least 30 seconds plus brief jitter.
+- Up to three browser operations run in parallel by default; extra calls queue
+  for at most one minute.
+- Operation starts are staggered by at least one second plus brief jitter. Tune
+  with `-max-concurrency` and `-min-request-interval`.
 - Every operation has a server deadline and returns an error instead of waiting
   forever.
 - Comment reads are capped and deliberately slow, so this is not a bulk

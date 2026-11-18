@@ -16,10 +16,15 @@ const (
 	defaultMaxQueueWait       = time.Minute
 	progressHeartbeatInterval = 15 * time.Second
 	defaultCancellationGrace  = 5 * time.Second
+	maxAccessConcurrency      = 8
 )
 
-// AccessPolicy controls single-account pacing and per-request comment limits.
+// AccessPolicy controls single-account concurrency, start pacing, and
+// per-request comment limits.
 type AccessPolicy struct {
+	MaxConcurrent int
+	// MinInterval is the minimum spacing between operation starts, so parallel
+	// callers never navigate in the same instant.
 	MinInterval  time.Duration
 	MaxJitter    time.Duration
 	MaxQueueWait time.Duration
@@ -29,15 +34,19 @@ type AccessPolicy struct {
 
 func DefaultAccessPolicy() AccessPolicy {
 	return AccessPolicy{
-		MinInterval:  30 * time.Second,
-		MaxJitter:    15 * time.Second,
-		MaxQueueWait: defaultMaxQueueWait,
-		MaxComments:  50,
-		MaxReplies:   10,
+		MaxConcurrent: 3,
+		MinInterval:   time.Second,
+		MaxJitter:     time.Second,
+		MaxQueueWait:  defaultMaxQueueWait,
+		MaxComments:   50,
+		MaxReplies:    10,
 	}
 }
 
 func (p AccessPolicy) Validate() error {
+	if p.MaxConcurrent < 1 || p.MaxConcurrent > maxAccessConcurrency {
+		return fmt.Errorf("maximum concurrency must be between 1 and %d", maxAccessConcurrency)
+	}
 	if p.MinInterval < 0 {
 		return fmt.Errorf("minimum access interval cannot be negative")
 	}
@@ -69,6 +78,8 @@ type accessOperation struct {
 // AccessGateSnapshot is a secret-free operational view for health reporting.
 type AccessGateSnapshot struct {
 	State           string
+	Active          int
+	MaxConcurrent   int
 	OperationID     uint64
 	Operation       string
 	Phase           string
@@ -144,9 +155,13 @@ func (e *accessGateUnavailableError) Error() string {
 	)
 }
 
-// accessGate serializes operations, applies pacing, and exposes stuck work.
+// accessGate bounds concurrent operations, staggers their starts, and exposes
+// stuck work. Exclusive operations wait for every slot so they can safely
+// replace the shared browser process.
 type accessGate struct {
-	slot              chan struct{}
+	tokens            chan struct{}
+	turnstile         chan struct{}
+	maxConcurrent     int
 	minInterval       time.Duration
 	maxJitter         time.Duration
 	maxQueueWait      time.Duration
@@ -155,8 +170,10 @@ type accessGate struct {
 	mu              sync.Mutex
 	nextID          uint64
 	queued          int
-	active          *accessOperation
+	active          map[uint64]*accessOperation
+	cancelling      int
 	unavailable     chan struct{}
+	nextStart       time.Time
 	lastFinished    time.Time
 	lastOperationID uint64
 	lastOperation   string
@@ -165,12 +182,25 @@ type accessGate struct {
 }
 
 func newAccessGate(minInterval, maxJitter, maxQueueWait time.Duration) *accessGate {
+	return newConcurrentAccessGate(1, minInterval, maxJitter, maxQueueWait)
+}
+
+func newConcurrentAccessGate(
+	maxConcurrent int,
+	minInterval, maxJitter, maxQueueWait time.Duration,
+) *accessGate {
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
+	}
 	return &accessGate{
-		slot:              make(chan struct{}, 1),
+		tokens:            make(chan struct{}, maxConcurrent),
+		turnstile:         make(chan struct{}, 1),
+		maxConcurrent:     maxConcurrent,
 		minInterval:       minInterval,
 		maxJitter:         maxJitter,
 		maxQueueWait:      maxQueueWait,
 		cancellationGrace: defaultCancellationGrace,
+		active:            make(map[uint64]*accessOperation),
 		unavailable:       make(chan struct{}),
 	}
 }
@@ -181,7 +211,18 @@ func (g *accessGate) Run(
 	timeout time.Duration,
 	fn func(context.Context) error,
 ) error {
-	return g.run(ctx, operation, g.maxQueueWait, timeout, fn)
+	return g.run(ctx, operation, false, g.maxQueueWait, timeout, fn)
+}
+
+// RunExclusive waits until no other operation holds the browser.
+func (g *accessGate) RunExclusive(
+	ctx context.Context,
+	operation string,
+	queueWait time.Duration,
+	timeout time.Duration,
+	fn func(context.Context) error,
+) error {
+	return g.run(ctx, operation, true, queueWait, timeout, fn)
 }
 
 func (g *accessGate) RunWithQueueWait(
@@ -191,12 +232,13 @@ func (g *accessGate) RunWithQueueWait(
 	timeout time.Duration,
 	fn func(context.Context) error,
 ) error {
-	return g.run(ctx, operation, queueWait, timeout, fn)
+	return g.run(ctx, operation, false, queueWait, timeout, fn)
 }
 
 func (g *accessGate) run(
 	ctx context.Context,
 	operation string,
+	exclusive bool,
 	queueWait time.Duration,
 	timeout time.Duration,
 	fn func(context.Context) error,
@@ -209,14 +251,12 @@ func (g *accessGate) run(
 	}
 
 	if snapshot := g.Snapshot(); snapshot.Phase == "cancelling" {
-		return &accessGateUnavailableError{
-			Operation:   snapshot.Operation,
-			OperationID: snapshot.OperationID,
-		}
+		return unavailableError(snapshot)
 	}
 
 	g.changeQueued(1)
-	if snapshot := g.Snapshot(); snapshot.Operation != "" {
+	if snapshot := g.Snapshot(); snapshot.Operation != "" &&
+		(exclusive || snapshot.Active >= g.maxConcurrent) {
 		reportProgress(ctx, fmt.Sprintf(
 			"%s is queued behind %s (operation %d).",
 			operation,
@@ -228,38 +268,19 @@ func (g *accessGate) run(
 	queueCtx, cancelQueue := context.WithTimeout(ctx, queueWait)
 	defer cancelQueue()
 
-	for {
-		unavailable := g.unavailableSignal()
-		select {
-		case g.slot <- struct{}{}:
-			g.changeQueued(-1)
-			if err := ctx.Err(); err != nil {
-				<-g.slot
-				return err
-			}
-			goto acquired
-		case <-unavailable:
-			snapshot := g.Snapshot()
-			if snapshot.Phase != "cancelling" {
-				continue
-			}
-			g.changeQueued(-1)
-			return unavailableError(snapshot)
-		case <-queueCtx.Done():
-			g.changeQueued(-1)
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			snapshot := g.Snapshot()
-			return &operationQueueTimeoutError{
-				Operation: operation,
-				Wait:      queueWait,
-				Active:    snapshot.Operation,
-			}
-		}
+	held, err := g.acquire(ctx, queueCtx, operation, queueWait, exclusive)
+	g.changeQueued(-1)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		g.release(held)
+		return err
+	}
+	if exclusive {
+		ctx = context.WithValue(ctx, exclusiveAccessKey{}, true)
 	}
 
-acquired:
 	operationID, cooldown := g.begin(operation)
 	if cooldown > 0 {
 		logrus.WithFields(logrus.Fields{
@@ -279,7 +300,7 @@ acquired:
 		case <-ctx.Done():
 			timer.Stop()
 			g.cancelBeforeRun(operationID)
-			<-g.slot
+			g.release(held)
 			return ctx.Err()
 		case <-timer.C:
 		}
@@ -311,7 +332,7 @@ acquired:
 	go func() {
 		err := runAccessOperation(operation, operationID, operationCtx, fn)
 		g.finish(operation, operationID, startedAt, err)
-		<-g.slot
+		g.release(held)
 		result <- err
 	}()
 
@@ -391,6 +412,88 @@ func runAccessOperation(
 	return fn(ctx)
 }
 
+type exclusiveAccessKey struct{}
+
+func hasExclusiveAccess(ctx context.Context) bool {
+	exclusive, _ := ctx.Value(exclusiveAccessKey{}).(bool)
+	return exclusive
+}
+
+// acquire takes one slot, or every slot for exclusive work. The turnstile keeps
+// waiting exclusive callers from being starved by a stream of shared callers.
+func (g *accessGate) acquire(
+	ctx context.Context,
+	queueCtx context.Context,
+	operation string,
+	queueWait time.Duration,
+	exclusive bool,
+) (int, error) {
+	fail := func(held int) (int, error) {
+		g.release(held)
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		snapshot := g.Snapshot()
+		if snapshot.Phase == "cancelling" {
+			return 0, unavailableError(snapshot)
+		}
+		return 0, &operationQueueTimeoutError{
+			Operation: operation,
+			Wait:      queueWait,
+			Active:    snapshot.Operation,
+		}
+	}
+
+	for {
+		unavailable := g.unavailableSignal()
+		select {
+		case g.turnstile <- struct{}{}:
+			goto entered
+		case <-unavailable:
+			if g.isUnavailable() {
+				return fail(0)
+			}
+		case <-queueCtx.Done():
+			return fail(0)
+		}
+	}
+
+entered:
+	defer func() { <-g.turnstile }()
+	need := 1
+	if exclusive {
+		need = g.maxConcurrent
+	}
+	held := 0
+	for held < need {
+		unavailable := g.unavailableSignal()
+		select {
+		case g.tokens <- struct{}{}:
+			held++
+		case <-unavailable:
+			if g.isUnavailable() {
+				return fail(held)
+			}
+		case <-queueCtx.Done():
+			return fail(held)
+		}
+	}
+	return held, nil
+}
+
+func (g *accessGate) release(held int) {
+	for range held {
+		<-g.tokens
+	}
+}
+
+func (g *accessGate) isUnavailable() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.cancelling > 0
+}
+
+// begin reserves the next start time so concurrent callers are staggered.
 func (g *accessGate) begin(operation string) (uint64, time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -403,22 +506,21 @@ func (g *accessGate) begin(operation string) (uint64, time.Duration) {
 		jitter = time.Duration(rand.Int63n(int64(g.maxJitter)))
 	}
 
-	cooldown := time.Duration(0)
-	if !g.lastFinished.IsZero() {
-		cooldown = time.Until(g.lastFinished.Add(g.minInterval + jitter))
-		if cooldown < 0 {
-			cooldown = 0
-		}
+	now := time.Now()
+	startAt := now
+	if g.nextStart.After(startAt) {
+		startAt = g.nextStart
 	}
+	g.nextStart = startAt.Add(g.minInterval + jitter)
+	cooldown := startAt.Sub(now)
 
-	acquiredAt := time.Now()
-	g.active = &accessOperation{
+	g.active[operationID] = &accessOperation{
 		ID:         operationID,
 		Name:       operation,
 		Phase:      "cooldown",
-		AcquiredAt: acquiredAt,
-		StartedAt:  acquiredAt,
-		Deadline:   acquiredAt.Add(cooldown),
+		AcquiredAt: now,
+		StartedAt:  now,
+		Deadline:   startAt,
 	}
 	return operationID, cooldown
 }
@@ -426,26 +528,28 @@ func (g *accessGate) begin(operation string) (uint64, time.Duration) {
 func (g *accessGate) start(operationID uint64, startedAt, deadline time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.active == nil || g.active.ID != operationID {
+	active := g.active[operationID]
+	if active == nil {
 		return
 	}
-	g.active.Phase = "running"
-	g.active.StartedAt = startedAt
-	g.active.Deadline = deadline
+	active.Phase = "running"
+	active.StartedAt = startedAt
+	active.Deadline = deadline
 }
 
 func (g *accessGate) markCancelling(operationID uint64, reason string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.active == nil || g.active.ID != operationID {
+	active := g.active[operationID]
+	if active == nil || active.Phase == "cancelling" {
 		return
 	}
-	if g.active.Phase == "cancelling" {
-		return
+	active.Phase = "cancelling"
+	active.CancelReason = reason
+	if g.cancelling == 0 {
+		close(g.unavailable)
 	}
-	g.active.Phase = "cancelling"
-	g.active.CancelReason = reason
-	close(g.unavailable)
+	g.cancelling++
 }
 
 func (g *accessGate) escalateCancellation(operationID uint64) {
@@ -460,9 +564,7 @@ func (g *accessGate) escalateCancellation(operationID uint64) {
 func (g *accessGate) cancelBeforeRun(operationID uint64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.active != nil && g.active.ID == operationID {
-		g.active = nil
-	}
+	delete(g.active, operationID)
 }
 
 func (g *accessGate) finish(
@@ -478,16 +580,17 @@ func (g *accessGate) finish(
 	}
 
 	g.mu.Lock()
-	wasCancelling := false
-	if g.active != nil && g.active.ID == operationID {
-		wasCancelling = g.active.Phase == "cancelling"
-		if g.active.CancelReason != "" {
-			outcome = g.active.CancelReason
+	if active := g.active[operationID]; active != nil {
+		if active.CancelReason != "" {
+			outcome = active.CancelReason
 		}
-		g.active = nil
-	}
-	if wasCancelling {
-		g.unavailable = make(chan struct{})
+		if active.Phase == "cancelling" {
+			g.cancelling--
+			if g.cancelling == 0 {
+				g.unavailable = make(chan struct{})
+			}
+		}
+		delete(g.active, operationID)
 	}
 	g.lastFinished = finishedAt
 	g.lastOperationID = operationID
@@ -528,6 +631,8 @@ func (g *accessGate) Snapshot() AccessGateSnapshot {
 
 	snapshot := AccessGateSnapshot{
 		State:           "idle",
+		Active:          len(g.active),
+		MaxConcurrent:   g.maxConcurrent,
 		Queued:          g.queued,
 		LastFinished:    g.lastFinished,
 		LastOperationID: g.lastOperationID,
@@ -535,20 +640,31 @@ func (g *accessGate) Snapshot() AccessGateSnapshot {
 		LastDuration:    g.lastDuration,
 		LastOutcome:     g.lastOutcome,
 	}
-	if g.active == nil {
+	// Report a cancelling operation first, otherwise the oldest active one.
+	var shown *accessOperation
+	for _, active := range g.active {
+		switch {
+		case shown == nil,
+			active.Phase == "cancelling" && shown.Phase != "cancelling",
+			(active.Phase == "cancelling") == (shown.Phase == "cancelling") &&
+				active.ID < shown.ID:
+			shown = active
+		}
+	}
+	if shown == nil {
 		return snapshot
 	}
 
 	snapshot.State = "busy"
-	if g.active.Phase == "cancelling" {
+	if shown.Phase == "cancelling" {
 		snapshot.State = "degraded"
 	}
-	snapshot.OperationID = g.active.ID
-	snapshot.Operation = g.active.Name
-	snapshot.Phase = g.active.Phase
-	snapshot.AcquiredAt = g.active.AcquiredAt
-	snapshot.StartedAt = g.active.StartedAt
-	snapshot.Deadline = g.active.Deadline
+	snapshot.OperationID = shown.ID
+	snapshot.Operation = shown.Name
+	snapshot.Phase = shown.Phase
+	snapshot.AcquiredAt = shown.AcquiredAt
+	snapshot.StartedAt = shown.StartedAt
+	snapshot.Deadline = shown.Deadline
 	return snapshot
 }
 
@@ -589,17 +705,24 @@ func withReadAccess[T any](
 	fn func(context.Context) (T, error),
 ) (T, error) {
 	var result T
-
-	err := service.accessGate.Run(ctx, operation, timeout, func(operationCtx context.Context) error {
+	run := func(operationCtx context.Context) error {
 		var err error
 		result, err = fn(operationCtx)
 		return err
-	})
+	}
+
+	var err error
+	if service.readBrowserStale.Load() {
+		err = service.accessGate.RunExclusive(ctx, operation, service.accessGate.maxQueueWait, timeout, run)
+	} else {
+		err = service.accessGate.Run(ctx, operation, timeout, run)
+	}
 
 	return result, err
 }
 
-func withReadAccessQueue[T any](
+// withExclusiveReadAccess runs fn while no other operation uses the browser.
+func withExclusiveReadAccess[T any](
 	service *XiaohongshuService,
 	ctx context.Context,
 	operation string,
@@ -609,7 +732,7 @@ func withReadAccessQueue[T any](
 ) (T, error) {
 	var result T
 
-	err := service.accessGate.RunWithQueueWait(
+	err := service.accessGate.RunExclusive(
 		ctx,
 		operation,
 		queueWait,

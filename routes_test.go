@@ -338,18 +338,20 @@ func TestHealthIncludesSiteAndEffectivePolicy(t *testing.T) {
 		Data struct {
 			Site   string `json:"site"`
 			Policy struct {
-				MinInterval  string `json:"min_interval"`
-				MaxJitter    string `json:"max_jitter"`
-				MaxQueueWait string `json:"max_queue_wait"`
-				MaxComments  int    `json:"max_comments"`
-				MaxReplies   int    `json:"max_replies"`
+				MaxConcurrent int    `json:"max_concurrency"`
+				MinInterval   string `json:"min_interval"`
+				MaxJitter     string `json:"max_jitter"`
+				MaxQueueWait  string `json:"max_queue_wait"`
+				MaxComments   int    `json:"max_comments"`
+				MaxReplies    int    `json:"max_replies"`
 			} `json:"policy"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
 	assert.Equal(t, xiaohongshu.Site().Name, response.Data.Site)
-	assert.Equal(t, "30s", response.Data.Policy.MinInterval)
-	assert.Equal(t, "15s", response.Data.Policy.MaxJitter)
+	assert.Equal(t, 3, response.Data.Policy.MaxConcurrent)
+	assert.Equal(t, "1s", response.Data.Policy.MinInterval)
+	assert.Equal(t, "1s", response.Data.Policy.MaxJitter)
 	assert.Equal(t, "1m0s", response.Data.Policy.MaxQueueWait)
 	assert.Equal(t, 50, response.Data.Policy.MaxComments)
 	assert.Equal(t, 10, response.Data.Policy.MaxReplies)

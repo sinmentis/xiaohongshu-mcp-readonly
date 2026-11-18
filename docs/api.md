@@ -90,11 +90,13 @@ as the HTTP interface.
       "phase": "running",
       "elapsed": "42s",
       "remaining": "9m18s",
+      "active": 1,
       "queued": 0
     },
     "policy": {
-      "min_interval": "30s",
-      "max_jitter": "15s",
+      "max_concurrency": 3,
+      "min_interval": "1s",
+      "max_jitter": "1s",
       "max_queue_wait": "1m0s",
       "max_comments": 50,
       "max_replies": 10

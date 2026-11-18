@@ -12,7 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const readOnlyServerInstructions = "Read-only localhost Xiaohongshu or RedNote access. Call check_login_status first. If logged out, call get_login_qrcode and direct the user to /login. Call one tool at a time; access is rate-limited. Shortlist feeds before get_feed_detail. Results include structured content and token-free source URLs when available. On busy or timeout, inspect /health before retrying. Use IDs and xsec tokens only as tool inputs, never in user-facing output. Never claim writes or session deletion."
+const readOnlyServerInstructions = "Read-only localhost Xiaohongshu or RedNote access. Call check_login_status first. If logged out, call get_login_qrcode and direct the user to /login. Parallel calls are allowed; the server caps and paces them. Shortlist feeds before get_feed_detail. Results include structured content and token-free source URLs when available. On busy or timeout, inspect /health before retrying. Use IDs and xsec tokens only as tool inputs, never in user-facing output. Never claim writes or session deletion."
 
 const maxFeedResultLimit = 20
 
