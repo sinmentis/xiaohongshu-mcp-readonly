@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -53,6 +54,11 @@ func TestResolveBrowserFallsBackWhenBundledDownloadFails(t *testing.T) {
 }
 
 func TestFindPlaywrightBrowserUsesLatestVersion(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		assert.Empty(t, findPlaywrightBrowser())
+		return
+	}
+
 	cacheDir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheDir)
 
