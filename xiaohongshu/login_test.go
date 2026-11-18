@@ -1,9 +1,12 @@
 package xiaohongshu
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestClassifyLoginState(t *testing.T) {
@@ -90,4 +93,25 @@ func TestClassifyLoginState(t *testing.T) {
 			assert.Equal(t, tt.want, classifyLoginState(tt.signals))
 		})
 	}
+}
+
+func TestWaitForLoginStateFindsDelayedQRCode(t *testing.T) {
+	calls := 0
+	state, err := waitForLoginState(
+		context.Background(),
+		LoginState{Stage: LoginStageUnknown},
+		time.Second,
+		time.Millisecond,
+		func(context.Context) (LoginState, error) {
+			calls++
+			if calls < 2 {
+				return LoginState{Stage: LoginStageUnknown}, nil
+			}
+			return LoginState{Stage: LoginStageQRCode, QRCode: "qr-data"}, nil
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, LoginState{Stage: LoginStageQRCode, QRCode: "qr-data"}, state)
+	assert.Equal(t, 2, calls)
 }

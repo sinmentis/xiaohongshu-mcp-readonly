@@ -17,6 +17,7 @@ func TestSite(t *testing.T) {
 
 	assert.Equal(t, SiteRednote, site.Name)
 	assert.Equal(t, "https://www.rednote.com/explore", site.Home)
+	assert.Equal(t, "https://www.rednote.com/login", site.Login)
 	assert.True(t, site.ForceZhCN)
 	assert.True(t, site.MatchesURL("https://www.rednote.com/explore?source=web"))
 	assert.False(t, site.MatchesURL("https://www.xiaohongshu.com/explore"))

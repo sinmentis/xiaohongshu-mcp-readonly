@@ -14,6 +14,7 @@ const (
 	deviceVerificationSelector  = ".r-captcha-modal .qrcode-img"
 	loginContainerSelector      = ".login-container"
 	loginPageSettleDelay        = 2 * time.Second
+	loginQRCodeWaitTimeout      = 15 * time.Second
 	loginStatusCheckSettleDelay = 1 * time.Second
 	loginStatusCheckTimeout     = 30 * time.Second
 	currentUserReadTimeout      = 10 * time.Second
@@ -118,7 +119,12 @@ func (a *LoginAction) Login(ctx context.Context) error {
 }
 
 func (a *LoginAction) FetchLoginState(ctx context.Context) (LoginState, error) {
-	return a.openLoginPage(ctx, loginPageSettleDelay)
+	state, err := a.openLoginPage(ctx, loginPageSettleDelay)
+	if err != nil || state.Stage != LoginStageUnknown {
+		return state, err
+	}
+
+	return waitForLoginState(ctx, state, loginQRCodeWaitTimeout, loginStatePollingInterval, a.CurrentState)
 }
 
 func (a *LoginAction) WaitForLogin(ctx context.Context) bool {
@@ -174,7 +180,7 @@ func (a *LoginAction) CurrentState(ctx context.Context) (LoginState, error) {
 func (a *LoginAction) openLoginPage(ctx context.Context, settleDelay time.Duration) (LoginState, error) {
 	pp := a.page.Context(ctx).Timeout(loginStatusCheckTimeout)
 	applySiteLocale(pp)
-	if err := pp.Navigate(Site().Home); err != nil {
+	if err := pp.Navigate(Site().Login); err != nil {
 		return LoginState{}, errors.Wrap(err, "navigate to login page failed")
 	}
 	if err := pp.WaitLoad(); err != nil {
@@ -214,6 +220,37 @@ func classifyLoginState(signals loginPageSignals) LoginState {
 		return LoginState{Stage: LoginStageWaitingConfirmation}
 	default:
 		return LoginState{Stage: LoginStageUnknown}
+	}
+}
+
+func waitForLoginState(
+	ctx context.Context,
+	state LoginState,
+	timeout time.Duration,
+	interval time.Duration,
+	read func(context.Context) (LoginState, error),
+) (LoginState, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return state, ctx.Err()
+		case <-timer.C:
+			return state, nil
+		case <-ticker.C:
+			current, err := read(ctx)
+			if err != nil {
+				return current, err
+			}
+			state = current
+			if state.Stage != LoginStageUnknown {
+				return state, nil
+			}
+		}
 	}
 }
 

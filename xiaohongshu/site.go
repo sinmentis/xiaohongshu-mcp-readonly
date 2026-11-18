@@ -16,19 +16,22 @@ type SiteConfig struct {
 	Name      string
 	Base      string
 	Home      string
+	Login     string
 	ForceZhCN bool
 }
 
 var sites = map[string]SiteConfig{
 	SiteXiaohongshu: {
-		Name: SiteXiaohongshu,
-		Base: "https://www.xiaohongshu.com",
-		Home: "https://www.xiaohongshu.com/explore",
+		Name:  SiteXiaohongshu,
+		Base:  "https://www.xiaohongshu.com",
+		Home:  "https://www.xiaohongshu.com/explore",
+		Login: "https://www.xiaohongshu.com/login",
 	},
 	SiteRednote: {
 		Name:      SiteRednote,
 		Base:      "https://www.rednote.com",
 		Home:      "https://www.rednote.com/explore",
+		Login:     "https://www.rednote.com/login",
 		ForceZhCN: true,
 	},
 }
