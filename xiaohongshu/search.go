@@ -3,12 +3,15 @@ package xiaohongshu
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/cdp"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/sinmentis/xiaohongshu-mcp-readonly/errors"
 	"github.com/sinmentis/xiaohongshu-mcp-readonly/humanize"
 	"github.com/sirupsen/logrus"
@@ -120,9 +123,14 @@ type SearchAction struct {
 
 type searchNavigator interface {
 	Navigate(string) error
-	WaitLoad() error
-	Wait(*rod.EvalOptions) error
+	GetContext() context.Context
+	Eval(string, ...interface{}) (*proto.RuntimeRemoteObject, error)
 }
+
+var (
+	ErrSearchLoginRequired        = stderrors.New("search requires an active login")
+	ErrSearchVerificationRequired = stderrors.New("search requires platform security verification")
+)
 
 const searchStateReadyJS = `() => {
 	const search = window.__INITIAL_STATE__?.search;
@@ -145,20 +153,73 @@ func NewSearchAction(page *rod.Page) *SearchAction {
 	return &SearchAction{page: pp}
 }
 
-func navigateToSearch(page searchNavigator, searchURL string) error {
+func navigateToSearch(page searchNavigator, site SiteConfig, searchURL string) error {
 	if err := page.Navigate(searchURL); err != nil {
 		return fmt.Errorf("navigate to search page: %w", err)
 	}
-	if err := page.WaitLoad(); err != nil {
-		return fmt.Errorf("wait for search page load: %w", err)
-	}
-	if err := page.Wait(rod.Eval(searchStateReadyJS)); err != nil {
+	if err := waitForSearchCondition(page, site, searchStateReadyJS); err != nil {
 		return fmt.Errorf("wait for search results: %w", err)
 	}
 	return nil
 }
 
-func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...FilterOption) ([]Feed, error) {
+func classifySearchRedirect(site SiteConfig, rawURL string) error {
+	current, err := url.Parse(rawURL)
+	if err != nil || !site.MatchesURL(rawURL) {
+		return nil
+	}
+	path := current.EscapedPath()
+	switch {
+	case path == "/website-login/captcha", strings.HasPrefix(path, "/website-login/captcha/"):
+		return ErrSearchVerificationRequired
+	case path == "/website-login", strings.HasPrefix(path, "/website-login/"),
+		path == "/login", path == "/login/":
+		return ErrSearchLoginRequired
+	default:
+		return nil
+	}
+}
+
+func waitForSearchCondition(page searchNavigator, site SiteConfig, condition string) error {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	// Read URL and readiness from the same document, including delayed redirects.
+	snapshotJS := `() => ({url: location.href, ready: (` + condition + `)()})`
+	ctx := page.GetContext()
+	for {
+		state, err := page.Eval(snapshotJS)
+		if err == nil {
+			if blocked := classifySearchRedirect(site, state.Value.Get("url").Str()); blocked != nil {
+				return blocked
+			}
+			if state.Value.Get("ready").Bool() {
+				return nil
+			}
+		} else if !stderrors.Is(err, cdp.ErrCtxNotFound) &&
+			!stderrors.Is(err, cdp.ErrCtxDestroyed) &&
+			!stderrors.Is(err, cdp.ErrObjNotFound) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func currentSearchRedirect(page *rod.Page, site SiteConfig) error {
+	probe := page.Timeout(time.Second)
+	defer probe.CancelTimeout()
+	tree, err := (proto.PageGetFrameTree{}).Call(probe)
+	if err != nil || tree == nil || tree.FrameTree == nil || tree.FrameTree.Frame == nil {
+		return nil
+	}
+	return classifySearchRedirect(site, tree.FrameTree.Frame.URL)
+}
+
+func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...FilterOption) (_ []Feed, searchErr error) {
 	pending, err := collectFilters(filters)
 	if err != nil {
 		return nil, err
@@ -166,26 +227,47 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 
 	// Context replaces the constructor deadline, so reapply the bounded timeout.
 	page := s.page.Context(ctx).Timeout(60 * time.Second)
+	defer page.CancelTimeout()
+	site := Site()
+	defer func() {
+		if searchErr != nil && !stderrors.Is(searchErr, ErrSearchLoginRequired) &&
+			!stderrors.Is(searchErr, ErrSearchVerificationRequired) {
+			if blocked := currentSearchRedirect(page, site); blocked != nil {
+				searchErr = blocked
+			}
+		}
+	}()
 
-	searchURL := makeSearchURL(keyword)
-	if err := navigateToSearch(page, searchURL); err != nil {
+	searchURL := makeSearchURL(site, keyword)
+	if err := navigateToSearch(page, site, searchURL); err != nil {
 		return nil, err
 	}
-	humanize.Delay(ctx, humanize.AfterNavigate)
+	humanize.Delay(page.GetContext(), humanize.AfterNavigate)
 
 	if len(pending) > 0 {
-		filterButton := page.MustElement(`div.filter`)
+		if err := waitForSearchCondition(page, site, `() => document.querySelector('div.filter') !== null`); err != nil {
+			return nil, err
+		}
+		filterButton, err := page.Element(`div.filter`)
+		if err != nil {
+			return nil, err
+		}
 		if err := humanize.Hover(filterButton); err != nil {
 			return nil, fmt.Errorf("悬停筛选按钮失败: %w", err)
 		}
 		humanize.Delay(ctx, humanize.BeforeClick)
 
-		page.MustWait(`() => document.querySelector('div.filter-panel') !== null`)
+		if err := waitForSearchCondition(page, site, `() => document.querySelector('div.filter-panel') !== null`); err != nil {
+			return nil, err
+		}
 
 		before := readFeedIDs(page)
 
 		// WaitInteractable misreads the hover panel as blocked; ClickNoWait keeps it open.
 		for _, pf := range pending {
+			if blocked := currentSearchRedirect(page, site); blocked != nil {
+				return nil, blocked
+			}
 			option, err := findFilterOption(page, pf)
 			if err != nil {
 				return nil, err
@@ -196,22 +278,32 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 			}
 		}
 
-		waitFeedsChanged(page, before, 15*time.Second)
+		if err := waitFeedsChanged(page, site, before, 15*time.Second); err != nil {
+			return nil, err
+		}
 	}
 
-	result := page.MustEval(`() => {
+	snapshot, err := page.Eval(`() => {
+		const url = location.href;
 		if (window.__INITIAL_STATE__ &&
 		    window.__INITIAL_STATE__.search &&
 		    window.__INITIAL_STATE__.search.feeds) {
 			const feeds = window.__INITIAL_STATE__.search.feeds;
 			const feedsData = feeds.value !== undefined ? feeds.value : feeds._value;
 			if (feedsData) {
-				return JSON.stringify(feedsData);
+				return {url, result: JSON.stringify(feedsData)};
 			}
 		}
-		return "";
-	}`).String()
+		return {url, result: ""};
+	}`)
+	if err != nil {
+		return nil, fmt.Errorf("read search results: %w", err)
+	}
+	if blocked := classifySearchRedirect(site, snapshot.Value.Get("url").Str()); blocked != nil {
+		return nil, blocked
+	}
 
+	result := snapshot.Value.Get("result").Str()
 	if result == "" {
 		return nil, errors.ErrNoFeeds
 	}
@@ -239,15 +331,17 @@ func readFeedIDs(page *rod.Page) string {
 }
 
 // The site clears feeds before refilling them, so wait for a changed non-empty ID set.
-func waitFeedsChanged(page *rod.Page, before string, timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if now := readFeedIDs(page); now != "" && now != before {
-			return
-		}
-		time.Sleep(300 * time.Millisecond)
+func waitFeedsChanged(page *rod.Page, site SiteConfig, before string, timeout time.Duration) error {
+	bounded := page.Timeout(timeout)
+	defer bounded.CancelTimeout()
+	previous, _ := json.Marshal(before)
+	condition := `() => { const ids = (` + feedIDsJS + `)(); return ids !== "" && ids !== ` + string(previous) + `; }`
+	err := waitForSearchCondition(bounded, site, condition)
+	if !stderrors.Is(err, context.DeadlineExceeded) || page.GetContext().Err() != nil {
+		return err
 	}
 	logrus.Warnf("筛选后等待结果刷新超时（%s），返回的可能是筛选前的数据", timeout)
+	return nil
 }
 
 // Scope text matching to the filter panel; the page repeats these labels elsewhere.
@@ -291,10 +385,10 @@ func findFilterOption(page *rod.Page, pf pendingFilter) (*rod.Element, error) {
 	return nil, fmt.Errorf("筛选面板里没有「%s」这一组", pf.group)
 }
 
-func makeSearchURL(keyword string) string {
+func makeSearchURL(site SiteConfig, keyword string) string {
 	values := url.Values{}
 	values.Set("keyword", keyword)
 	values.Set("source", "web_explore_feed")
 
-	return fmt.Sprintf("%s/search_result?%s", Site().Base, values.Encode())
+	return fmt.Sprintf("%s/search_result?%s", site.Base, values.Encode())
 }

@@ -18,6 +18,7 @@ const (
 	actionInspectHealth            = "inspect_health"
 	actionRetry                    = "retry"
 	actionCorrectInput             = "correct_input"
+	actionCompleteVerification     = "complete_platform_verification"
 
 	loginActionPath  = "/login"
 	healthActionPath = "/health"
@@ -117,6 +118,21 @@ func classifyPublicError(
 	var browserUnavailable *browserRuntimeUnavailableError
 
 	switch {
+	case errors.Is(err, xiaohongshu.ErrSearchLoginRequired):
+		classified.StatusCode = http.StatusUnauthorized
+		classified.Error.Source = "platform"
+		classified.Error.Code = "LOGIN_REQUIRED"
+		classified.Error.Message = "Search requires an active login. Open the local login page and scan the QR code again."
+		classified.Error.Details = ""
+		classified.Error.NextAction = actionRestartLogin
+		classified.Error.ActionPath = loginActionPath
+	case errors.Is(err, xiaohongshu.ErrSearchVerificationRequired):
+		classified.StatusCode = http.StatusForbidden
+		classified.Error.Source = "platform"
+		classified.Error.Code = "PLATFORM_VERIFICATION_REQUIRED"
+		classified.Error.Message = "The platform requires security verification. Complete it directly on the platform before searching again."
+		classified.Error.Details = ""
+		classified.Error.NextAction = actionCompleteVerification
 	case errors.As(err, &invalidArgument):
 		classified.StatusCode = http.StatusBadRequest
 		classified.Error.Source = "input"
