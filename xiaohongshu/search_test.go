@@ -1,19 +1,27 @@
 package xiaohongshu
 
 import (
+	"context"
 	"errors"
 	"testing"
 
-	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/cdp"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/stretchr/testify/require"
+	"github.com/ysmood/gson"
 )
+
+type searchSnapshot struct {
+	url   string
+	ready bool
+	err   error
+}
 
 type fakeSearchNavigator struct {
 	calls       []string
 	waitJS      string
 	navigateErr error
-	loadErr     error
-	stateErr    error
+	snapshots   []searchSnapshot
 }
 
 func (f *fakeSearchNavigator) Navigate(string) error {
@@ -21,37 +29,79 @@ func (f *fakeSearchNavigator) Navigate(string) error {
 	return f.navigateErr
 }
 
-func (f *fakeSearchNavigator) WaitLoad() error {
-	f.calls = append(f.calls, "load")
-	return f.loadErr
+func (f *fakeSearchNavigator) GetContext() context.Context {
+	return context.Background()
 }
 
-func (f *fakeSearchNavigator) Wait(options *rod.EvalOptions) error {
+func (f *fakeSearchNavigator) Eval(js string, _ ...interface{}) (*proto.RuntimeRemoteObject, error) {
 	f.calls = append(f.calls, "search-state")
-	f.waitJS = options.JS
-	return f.stateErr
+	f.waitJS = js
+	if len(f.snapshots) == 0 {
+		return nil, errors.New("unexpected search wait")
+	}
+	snapshot := f.snapshots[0]
+	f.snapshots = f.snapshots[1:]
+	return &proto.RuntimeRemoteObject{Value: gson.New(map[string]any{
+		"url": snapshot.url, "ready": snapshot.ready,
+	})}, snapshot.err
 }
 
 func TestNavigateToSearchWaitsForSearchState(t *testing.T) {
-	t.Run("waits for load and search state without global page stability", func(t *testing.T) {
-		page := &fakeSearchNavigator{}
+	site := sites[SiteRednote]
+	searchURL := site.Base + "/search_result"
+	t.Run("waits for search state without global page stability", func(t *testing.T) {
+		page := &fakeSearchNavigator{snapshots: []searchSnapshot{{url: searchURL, ready: true}}}
 
-		err := navigateToSearch(page, "https://www.rednote.com/search_result")
+		err := navigateToSearch(page, site, searchURL)
 
 		require.NoError(t, err)
-		require.Equal(t, []string{"navigate", "load", "search-state"}, page.calls)
+		require.Equal(t, []string{"navigate", "search-state"}, page.calls)
 		require.Contains(t, page.waitJS, "search.state")
 		require.Contains(t, page.waitJS, `state === "success"`)
+	})
+
+	t.Run("stops on delayed verification even if ready", func(t *testing.T) {
+		page := &fakeSearchNavigator{snapshots: []searchSnapshot{
+			{url: searchURL},
+			{err: cdp.ErrCtxDestroyed},
+			{url: site.Base + "/website-login/captcha?redirectPath=/search_result", ready: true},
+		}}
+		require.ErrorIs(t, navigateToSearch(page, site, searchURL), ErrSearchVerificationRequired)
+		require.Empty(t, page.snapshots)
 	})
 
 	t.Run("stops after navigation failure", func(t *testing.T) {
 		page := &fakeSearchNavigator{navigateErr: errors.New("navigation failed")}
 
-		err := navigateToSearch(page, "https://www.rednote.com/search_result")
+		err := navigateToSearch(page, site, searchURL)
 
 		require.ErrorContains(t, err, "navigate to search page")
 		require.Equal(t, []string{"navigate"}, page.calls)
 	})
+}
+
+func TestClassifySearchRedirect(t *testing.T) {
+	for _, tt := range []struct {
+		url  string
+		want error
+	}{
+		{"https://www.xiaohongshu.com/website-login/captcha/continue", ErrSearchVerificationRequired},
+		{"https://www.xiaohongshu.com/website-login?redirectPath=/website-login/captcha", ErrSearchLoginRequired},
+		{"https://www.xiaohongshu.com/login/", ErrSearchLoginRequired},
+		{"https://www.xiaohongshu.com/search_result?keyword=/website-login/captcha", nil},
+		{"https://www.xiaohongshu.com/website-login-other", nil},
+		{"https://www.xiaohongshu.com/website-login%2Fcaptcha", nil},
+		{"https://www.rednote.com/website-login/captcha", nil},
+	} {
+		t.Run(tt.url, func(t *testing.T) {
+			got := classifySearchRedirect(sites[SiteXiaohongshu], tt.url)
+			if tt.want == nil {
+				require.NoError(t, got)
+			} else {
+				require.ErrorIs(t, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestCollectFilters(t *testing.T) {

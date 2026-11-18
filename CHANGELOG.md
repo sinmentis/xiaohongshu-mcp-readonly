@@ -4,6 +4,10 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Report login and security-verification redirects separately from empty search
+  results. Search stops without automatically retrying or attempting verification.
+  Adapted from [xpzouying/xiaohongshu-mcp#872](https://github.com/xpzouying/xiaohongshu-mcp/pull/872).
+
 - Establish the public read-only fork.
 - Add positive MCP and HTTP allowlists.
 - Add RedNote and Xiaohongshu site separation.
