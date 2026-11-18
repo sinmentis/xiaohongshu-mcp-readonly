@@ -185,7 +185,15 @@ func waitForSearchCondition(page searchNavigator, site SiteConfig, condition str
 	defer ticker.Stop()
 
 	// Read URL and readiness from the same document, including delayed redirects.
-	snapshotJS := `() => ({url: location.href, ready: (` + condition + `)()})`
+	snapshotJS := `() => {
+		const userInfo = window.__INITIAL_STATE__?.user?.userInfo;
+		const user = userInfo && (userInfo.value !== undefined ? userInfo.value : userInfo);
+		return {
+			url: location.href,
+			ready: (` + condition + `)(),
+			loggedOut: !!(user && user.guest)
+		};
+	}`
 	ctx := page.GetContext()
 	for {
 		state, err := page.Eval(snapshotJS)
@@ -195,6 +203,9 @@ func waitForSearchCondition(page searchNavigator, site SiteConfig, condition str
 			}
 			if state.Value.Get("ready").Bool() {
 				return nil
+			}
+			if state.Value.Get("loggedOut").Bool() {
+				return ErrSearchLoginRequired
 			}
 		} else if !stderrors.Is(err, cdp.ErrCtxNotFound) &&
 			!stderrors.Is(err, cdp.ErrCtxDestroyed) &&
