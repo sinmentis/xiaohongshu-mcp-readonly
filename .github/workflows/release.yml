@@ -1,51 +1,113 @@
 name: Release
 
 on:
+  workflow_run:
+    workflows: [CI, CodeQL]
+    branches: [main]
+    types: [completed]
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
       - "v[0-9]+.[0-9]+.[0-9]+-*"
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
+permissions: {}
 
 env:
   GOFLAGS: -mod=readonly
 
 jobs:
   release:
-    if: github.repository == 'sinmentis/xiaohongshu-mcp-readonly'
+    if: >-
+      github.repository == 'sinmentis/xiaohongshu-mcp-readonly' &&
+      (github.event_name == 'push' ||
+       (github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-latest
+    concurrency:
+      group: publish-release
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
+      - name: Require CI and CodeQL for the current main commit
+        id: checks
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          main_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+          if [[ "$SOURCE_SHA" != "$main_sha" || "$SOURCE_SHA" != "$GITHUB_SHA" ]]; then
+            echo "A newer main commit supersedes this run."
+            exit 0
+          fi
+          for workflow in ci.yml codeql.yml; do
+            conclusion=$(gh api -X GET "repos/$GH_REPO/actions/workflows/$workflow/runs" \
+              -f branch=main -f event=push -f head_sha="$SOURCE_SHA" -F per_page=1 \
+              --jq '.workflow_runs[0].conclusion // ""')
+            if [[ "$conclusion" != success ]]; then
+              echo "Waiting for a successful $workflow push run on $SOURCE_SHA."
+              exit 0
+            fi
+          done
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+
       - name: Check out repository
+        if: github.event_name == 'push' || steps.checks.outputs.ready == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ env.SOURCE_SHA }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify release source
+        if: github.event_name == 'push' || steps.checks.outputs.ready == 'true'
         run: |
           set -eu
           test -f NOTICE
           grep -Fxq 'module github.com/sinmentis/xiaohongshu-mcp-readonly' go.mod
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main
+
+      - name: Select release version
+        id: version
+        if: github.event_name == 'push' || steps.checks.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            version=$GITHUB_REF_NAME
+          else
+            version=$(bash .github/scripts/next-release-version.sh "$SOURCE_SHA")
+          fi
+          if [[ -z "$version" ]]; then
+            echo "This commit already has a stable release tag."
+            exit 0
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
+        if: steps.version.outputs.version != ''
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Verify and test
+        if: steps.version.outputs.version != ''
         run: |
           go mod verify
           go test ./...
 
       - name: Build release archives
+        if: steps.version.outputs.version != ''
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -eu
           mkdir -p dist stage
@@ -81,6 +143,7 @@ jobs:
           (cd dist && sha256sum ./*.tar.gz ./*.zip > SHA256SUMS)
 
       - name: Attest release artifacts
+        if: steps.version.outputs.version != ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: |
@@ -89,10 +152,27 @@ jobs:
             dist/SHA256SUMS
 
       - name: Create GitHub release
+        if: steps.version.outputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/* \
-            --verify-tag \
-            --generate-notes \
-            --title "${GITHUB_REF_NAME}"
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+            main_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+            if [[ "$SOURCE_SHA" != "$main_sha" ]]; then
+              echo "A newer main commit supersedes this build."
+              exit 0
+            fi
+            existing_tag=$(git ls-remote --refs origin "refs/tags/$VERSION")
+            if [[ -n "$existing_tag" ]]; then
+              echo "::error::Release tag $VERSION appeared after version selection."
+              exit 1
+            fi
+            gh release create "$VERSION" dist/* --target "$SOURCE_SHA" --generate-notes --title "$VERSION"
+          else
+            prerelease=()
+            if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
+            gh release create "$VERSION" dist/* --verify-tag --generate-notes --title "$VERSION" "${prerelease[@]}"
+          fi
