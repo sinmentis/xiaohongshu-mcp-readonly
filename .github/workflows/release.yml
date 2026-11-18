@@ -44,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           main_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
-          if [[ "$SOURCE_SHA" != "$main_sha" || "$SOURCE_SHA" != "$GITHUB_SHA" ]]; then
+          if ! [[ "$SOURCE_SHA" == "$main_sha" && "$SOURCE_SHA" == "$GITHUB_SHA" ]]; then
             echo "A newer main commit supersedes this run."
             exit 0
           fi
