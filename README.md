@@ -24,7 +24,7 @@ RedNote 公开笔记、读取评论和查看用户主页。这个只读 Model Co
 [安装与配置](#快速开始) · [6 个只读工具](#mcp-工具) ·
 [Copilot CLI 配置](docs/copilot-cli.md) · [故障排查](docs/troubleshooting.md)
 
-需要 Go 1.25.13 或更高版本。建议使用专门的测试账号。
+需要 Go 1.26.11 或更高版本。建议使用专门的测试账号。
 
 Linux 上有 systemd 用户会话时：
 

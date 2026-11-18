@@ -16,7 +16,7 @@ All notable changes are documented here.
   and detailed health reporting.
 - Add typed MCP outputs, stable recovery errors, token-free source URLs, and
   normalized search filters.
-- Require Go 1.25.13 to include the latest standard-library security fixes.
+- Require Go 1.26.11 and golang.org/x/net v0.60.0 to include the latest standard-library security fixes.
 - Make browser archive containment explicit to CodeQL and add traversal and
   symlink regression coverage.
 - Remove unused upstream mutation implementations and dead handlers.
