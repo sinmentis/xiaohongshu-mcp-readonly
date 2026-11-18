@@ -39,6 +39,7 @@ func TestLoginPage(t *testing.T) {
 
 			require.Equal(t, http.StatusOK, recorder.Code)
 			assert.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
+			assert.Equal(t, "noindex, nofollow, noarchive", recorder.Header().Get("X-Robots-Tag"))
 			assert.Contains(t, recorder.Header().Get("Content-Security-Policy"), "default-src 'self'")
 			assert.NotEmpty(t, recorder.Body.String())
 		})

@@ -17,6 +17,11 @@ local page open until fresh-browser verification finishes.
 
 ## No QR code appears
 
+Open `http://127.0.0.1:18060/login`. The page reuses an active sign-in or a
+verified connection; **Get a new code** or **Try again** starts a fresh attempt.
+The browser opens the selected site's `/login` page directly instead of
+depending on the home feed to display a login prompt.
+
 Check the service log:
 
 ```bash
@@ -24,6 +29,7 @@ journalctl --user -u xiaohongshu-mcp-readonly.service -n 100 --no-pager
 ```
 
 Confirm the browser can start and the selected site is reachable.
+The local sign-in page is intentionally excluded from search indexing.
 
 ## Browser unavailable
 

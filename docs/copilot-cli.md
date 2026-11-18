@@ -55,6 +55,9 @@ the QR workflow, not to the authenticated account session.
 
 The page reports success only after a fresh browser restores the exported
 cookies and confirms that the site is still signed in.
+Reopening the page reuses an active login attempt or verified connection.
+Connection details are available on demand; failed attempts show a retry
+action instead of leaving a stale QR code onscreen.
 
 For a terminal QR:
 

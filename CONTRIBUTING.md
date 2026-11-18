@@ -39,6 +39,15 @@ go test ./...
 go test ./... -race
 ```
 
+For login interface changes, also run the dependency-free JavaScript tests:
+
+```bash
+node --test web/login.test.cjs
+```
+
+Use Node.js 18 or later. Login-page previews must use a nonfunctional mock code,
+never a real login QR code or account session.
+
 When changing browser integration code, also compile the integration tests:
 
 ```bash

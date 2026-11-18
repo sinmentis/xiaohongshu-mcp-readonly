@@ -1,4 +1,4 @@
-# Xiaohongshu / RedNote MCP Server (Read-only)
+# Xiaohongshu MCP / RedNote MCP Server (Read-only)
 
 [简体中文](README.md) | **English**
 
@@ -6,9 +6,10 @@
 [![CodeQL](https://github.com/sinmentis/xiaohongshu-mcp-readonly/actions/workflows/codeql.yml/badge.svg)](https://github.com/sinmentis/xiaohongshu-mcp-readonly/actions/workflows/codeql.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-A localhost-only, read-only Model Context Protocol (MCP) server for Xiaohongshu
-and RedNote. It works with GitHub Copilot CLI, Claude Code, Codex CLI, and
-Cursor to search public notes, read comments, and view user profiles.
+Search public Xiaohongshu / RedNote notes, read comments, and explore user
+profiles from GitHub Copilot CLI, Claude Code, Codex CLI, or Cursor.
+This read-only Model Context Protocol (MCP) server runs on localhost, with
+browser-based QR sign-in and no need to give account cookies to your AI client.
 
 > [!IMPORTANT]
 > This server exposes exactly six read-only tools. It cannot publish, comment,
@@ -22,6 +23,9 @@ Cursor to search public notes, read comments, and view user profiles.
 > `http://127.0.0.1:18060/login`.
 
 ## Quick start
+
+[Installation](#quick-start) · [Six read-only tools](#mcp-tools) ·
+[Copilot CLI setup](docs/copilot-cli.md) · [Troubleshooting](docs/troubleshooting.md)
 
 Requires Go 1.25.13 or later. A dedicated test account is recommended.
 

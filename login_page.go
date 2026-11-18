@@ -30,6 +30,7 @@ func serveLoginAsset(path, contentType string) gin.HandlerFunc {
 		}
 
 		c.Header("Cache-Control", "no-store")
+		c.Header("X-Robots-Tag", "noindex, nofollow, noarchive")
 		c.Header("Content-Security-Policy",
 			"default-src 'self'; img-src 'self' data:; style-src 'self'; "+
 				"script-src 'self'; connect-src 'self'; base-uri 'none'; "+

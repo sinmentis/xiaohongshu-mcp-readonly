@@ -1,73 +1,82 @@
 <!doctype html>
+<!--
+THESIS: A local account connection, not a marketing page. One state, one next step.
+OWN-WORLD: Paper white, ink black, a red signature, system type, precise borders.
+STORY: Scan, confirm, connect. Credentials stay on this machine.
+FIRST VIEWPORT: A quiet header above a centered connection workspace and local-access footer.
+FORM: Brief-pinned minimal utility. The QR gives way to a clear completion mark.
+-->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Xiaohongshu login</title>
+  <meta name="theme-color" content="#fafafa">
+  <meta name="description" content="Connect your Xiaohongshu or RedNote account to the local, read-only MCP server. Scan to sign in. Your session stays on this device.">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <title>Connect account · Xiaohongshu / RedNote MCP</title>
   <link rel="icon" href="/login/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/login/styles.css">
   <script src="/login/app.js" defer></script>
 </head>
 <body>
-  <main class="shell">
-    <header class="brand">
-      <span class="brand-mark" aria-hidden="true">R</span>
-      <span id="brand-label">Xiaohongshu read-only</span>
+  <div class="shell">
+    <header class="masthead">
+      <a class="brand" href="/login" aria-label="Read-only MCP connection">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M4 12V4h8M20 4h8v8M28 20v8h-8M12 28H4v-8"/>
+          <path d="M12 12h8v8h-8z"/>
+        </svg>
+        <span id="brand-label">Read-only MCP</span>
+      </a>
+      <span class="local-label"><span aria-hidden="true"></span>Local connection</span>
     </header>
 
-    <section class="login-layout">
-      <div class="intro">
-        <p class="eyebrow">Local account connection</p>
-        <h1>Sign in from any browser.</h1>
-        <p class="lede">
-          This page runs only on your machine. It keeps one browser session alive,
-          follows every verification step, and stores the site-specific session.
-        </p>
-
-        <ol class="steps">
-          <li><span>1</span>Scan the login code.</li>
-          <li><span>2</span>Confirm the sign-in on your phone.</li>
-          <li><span>3</span>Scan a device-verification code if Xiaohongshu requests one.</li>
-        </ol>
-
-        <p class="privacy">
-          The MCP remains read-only. Signing in does not enable publishing,
-          commenting, liking, or favoriting.
-        </p>
+    <main id="connection" class="connection" aria-labelledby="stage-title" data-state="loading" aria-busy="true">
+      <div class="heading">
+        <h1 id="stage-title">Connect your account.</h1>
+        <p id="stage-detail">Preparing your sign-in.</p>
       </div>
 
-      <section class="login-panel" aria-labelledby="stage-title" aria-live="polite">
-        <div class="status-line">
-          <span id="status-dot" class="status-dot is-working" aria-hidden="true"></span>
-          <span id="status-label">Starting local login session</span>
+      <div id="qr-frame" class="connection-visual">
+        <img id="qr-image" width="264" height="264" alt="Account sign-in QR code" hidden>
+        <div id="qr-placeholder" class="placeholder">
+          <span class="spinner" aria-hidden="true"></span>
+          <svg class="state-symbol success-symbol" viewBox="0 0 64 64" aria-hidden="true">
+            <path d="m18 33 9 9 20-21"/>
+          </svg>
+          <svg class="state-symbol error-symbol" viewBox="0 0 64 64" aria-hidden="true">
+            <path d="m23 23 18 18m0-18L23 41"/>
+          </svg>
+          <svg class="state-symbol idle-symbol" viewBox="0 0 64 64" aria-hidden="true">
+            <path d="M22 8h20a4 4 0 0 1 4 4v40a4 4 0 0 1-4 4H22a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4Zm5 40h10"/>
+          </svg>
         </div>
+      </div>
 
-        <div id="qr-frame" class="qr-frame is-loading">
-          <img id="qr-image" alt="Current Xiaohongshu login QR code" hidden>
-          <div id="qr-placeholder" class="qr-placeholder">
-            <span class="spinner" aria-hidden="true"></span>
-            <span>Preparing secure browser session...</span>
-          </div>
-        </div>
+      <div class="session-status" role="status" aria-live="polite" aria-atomic="true">
+        <span id="status-dot" class="status-dot is-working" aria-hidden="true"></span>
+        <span id="status-label">Starting sign-in</span>
+      </div>
+      <p id="session-time" class="session-time"></p>
+      <button id="retry-button" class="retry-button" type="button" hidden>Try again</button>
 
-        <div class="stage-copy">
-          <h2 id="stage-title">Starting sign-in</h2>
-          <p id="stage-detail">
-            The first launch can take up to a minute while the protected browser starts.
-          </p>
-          <p id="session-time" class="session-time"></p>
-        </div>
-
-        <button id="retry-button" class="retry-button" type="button" hidden>
-          Start a new login session
-        </button>
-      </section>
-    </section>
+      <details class="connection-details">
+        <summary>Connection details<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg></summary>
+        <dl>
+          <div><dt>Server</dt><dd><code id="server-address">127.0.0.1</code></dd></div>
+          <div><dt>Access</dt><dd>6 read-only tools</dd></div>
+          <div><dt>Session</dt><dd>Stored on this device</dd></div>
+        </dl>
+        <p>No publishing, comments, likes, or favorites.</p>
+      </details>
+      <noscript><p class="no-script">Enable JavaScript to display the sign-in code and connection status.</p></noscript>
+    </main>
 
     <footer>
-      Opened from <code>127.0.0.1</code>. Login state is stored only on this machine.
+      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="7" width="9" height="7" rx="1.5"/><path d="M5.5 7V4a2.5 2.5 0 0 1 5 0v3"/></svg>
+      Your session stays on this device.
     </footer>
-  </main>
+  </div>
 </body>
 </html>

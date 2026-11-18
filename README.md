@@ -1,4 +1,4 @@
-# 小红书 / RedNote MCP Server（只读版）
+# 小红书 MCP / RedNote MCP Server（只读版）
 
 **简体中文** | [English](README.en.md)
 
@@ -6,9 +6,9 @@
 [![CodeQL](https://github.com/sinmentis/xiaohongshu-mcp-readonly/actions/workflows/codeql.yml/badge.svg)](https://github.com/sinmentis/xiaohongshu-mcp-readonly/actions/workflows/codeql.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-这是一个只跑在本机的只读 MCP Server，支持小红书和 RedNote。可以接入
-GitHub Copilot CLI、Claude Code、Codex CLI 和 Cursor，用 AI Agent 搜索公开
-笔记、读取评论和查看用户主页。
+在 GitHub Copilot CLI、Claude Code、Codex CLI 和 Cursor 中搜索小红书 /
+RedNote 公开笔记、读取评论和查看用户主页。这个只读 Model Context Protocol
+（MCP）Server 只在本机运行，通过网页扫码登录，不需要把 Cookie 交给 AI 客户端。
 
 > [!IMPORTANT]
 > 这里只开放 6 个只读工具。不能发笔记、评论、回复、点赞、收藏，也不能读取通知
@@ -20,6 +20,9 @@ GitHub Copilot CLI、Claude Code、Codex CLI 和 Cursor，用 AI Agent 搜索公
 > `http://127.0.0.1:18060/login` 打开。
 
 ## 快速开始
+
+[安装与配置](#快速开始) · [6 个只读工具](#mcp-工具) ·
+[Copilot CLI 配置](docs/copilot-cli.md) · [故障排查](docs/troubleshooting.md)
 
 需要 Go 1.25.13 或更高版本。建议使用专门的测试账号。
 
