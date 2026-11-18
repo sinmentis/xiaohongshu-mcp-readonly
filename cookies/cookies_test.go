@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetCookiesFilePath(t *testing.T) {
@@ -47,8 +49,13 @@ func TestLoadSaveCookies(t *testing.T) {
 	assert.Equal(t, float64(2), f["version"])
 
 	info, err := os.Stat(path)
-	assert.NoError(t, err)
-	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
+	require.NoError(t, err)
+	assert.True(t, info.Mode().IsRegular())
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
+	} else {
+		assert.NotZero(t, info.Mode().Perm()&0200)
+	}
 }
 
 func TestSeed(t *testing.T) {
@@ -130,9 +137,11 @@ func TestSaveCookies_CreatesParentDir(t *testing.T) {
 }
 
 func TestGetCookiesFilePathForSite(t *testing.T) {
-	t.Setenv("COOKIES_PATH", "/data/cookies.json")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cookies.json")
+	t.Setenv("COOKIES_PATH", path)
 
-	assert.Equal(t, "/data/cookies.json", GetCookiesFilePathForSite("xiaohongshu"))
-	assert.Equal(t, "/data/cookies.json", GetCookiesFilePathForSite(""))
-	assert.Equal(t, "/data/cookies-rednote.json", GetCookiesFilePathForSite("rednote"))
+	assert.Equal(t, path, GetCookiesFilePathForSite("xiaohongshu"))
+	assert.Equal(t, path, GetCookiesFilePathForSite(""))
+	assert.Equal(t, filepath.Join(dir, "cookies-rednote.json"), GetCookiesFilePathForSite("rednote"))
 }

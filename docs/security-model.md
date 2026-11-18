@@ -31,8 +31,10 @@ reverse proxy.
 
 ## Cookies
 
-Cookies are stored in a site-specific JSON file with mode `0600`. The file is
-not encrypted and grants the same access as the browser session.
+Cookies are stored in a site-specific JSON file that is not encrypted and grants
+the same access as the browser session. On Unix-like systems it is written
+with mode `0600`. On Windows, access depends on the file's ACL, normally
+inherited from its directory; Unix permission bits do not restrict access.
 
 Use a private local directory, never add cookie files to version control, and
 revoke sessions through the platform if a file may have been copied.

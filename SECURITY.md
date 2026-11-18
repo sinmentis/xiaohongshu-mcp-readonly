@@ -47,9 +47,11 @@ exact MCP tool and HTTP route sets.
 
 ## Session data
 
-Cookie files contain a full authenticated session. They are written with mode
-`0600`, but they are not encrypted. Store them on a trusted local filesystem,
-never commit them, and never share them.
+Cookie files contain a full authenticated session and are not encrypted. On
+Unix-like systems they are written with mode `0600`. Windows does not enforce
+Unix permission bits; access is controlled by the file's ACL, normally inherited
+from its directory. Store them in a private local directory, never commit them,
+and never share them.
 
 Deleting the local cookie file does not necessarily revoke the remote session.
 Use the platform's account controls to revoke sessions.
